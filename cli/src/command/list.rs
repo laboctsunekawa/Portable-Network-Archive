@@ -11,6 +11,7 @@ use crate::{
     ext::*,
     utils::{self, GlobPatterns},
 };
+use anyhow::Context;
 use base64::Engine;
 use chrono::{DateTime, Local};
 use clap::{
@@ -107,7 +108,7 @@ pub(crate) struct ListCommand {
 
 impl Command for ListCommand {
     #[inline]
-    fn execute(self) -> io::Result<()> {
+    fn execute(self) -> anyhow::Result<()> {
         list_archive(self)
     }
 }
@@ -244,7 +245,7 @@ where
     }
 }
 
-fn list_archive(args: ListCommand) -> io::Result<()> {
+fn list_archive(args: ListCommand) -> anyhow::Result<()> {
     let password = ask_password(args.password)?;
     let options = ListOptions {
         long: args.long,
@@ -291,10 +292,12 @@ fn list_archive(args: ListCommand) -> io::Result<()> {
             exclude,
             options,
         )
+        .with_context(|| "")
     }
     #[cfg(feature = "memmap")]
     {
         run_list_archive_mem(archives, password.as_deref(), files_globs, exclude, options)
+            .with_context(|| "")
     }
 }
 
@@ -358,7 +361,7 @@ pub(crate) fn run_list_archive(
     files_globs: GlobPatterns,
     exclude: Exclude,
     args: ListOptions,
-) -> io::Result<()> {
+) -> anyhow::Result<()> {
     let mut entries = Vec::new();
 
     run_read_entries(archive_provider, |entry| {

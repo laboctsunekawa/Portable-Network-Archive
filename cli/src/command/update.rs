@@ -23,6 +23,7 @@ use crate::{
         PathPartExt,
     },
 };
+use anyhow::Context;
 use clap::{ArgGroup, Parser, ValueHint};
 use indexmap::IndexMap;
 use pna::{Archive, EntryName, Metadata};
@@ -213,7 +214,7 @@ pub(crate) struct UpdateCommand {
 
 impl Command for UpdateCommand {
     #[inline]
-    fn execute(self) -> io::Result<()> {
+    fn execute(self) -> anyhow::Result<()> {
         match self.transform_strategy.strategy() {
             SolidEntriesTransformStrategy::UnSolid => {
                 update_archive::<TransformStrategyUnSolid>(self)
@@ -222,10 +223,11 @@ impl Command for UpdateCommand {
                 update_archive::<TransformStrategyKeepSolid>(self)
             }
         }
+        .with_context(|| "When updating archive")
     }
 }
 
-fn update_archive<Strategy: TransformStrategy>(args: UpdateCommand) -> io::Result<()> {
+fn update_archive<Strategy: TransformStrategy>(args: UpdateCommand) -> anyhow::Result<()> {
     let current_dir = env::current_dir()?;
     let password = ask_password(args.password)?;
     check_password(&password, &args.cipher);
@@ -234,7 +236,7 @@ fn update_archive<Strategy: TransformStrategy>(args: UpdateCommand) -> io::Resul
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("{} is not exists", archive_path.display()),
-        ));
+        ))?;
     }
     let password = password.as_deref();
     let option = entry_option(args.compression, args.cipher, args.hash, password);
@@ -388,9 +390,12 @@ fn update_archive<Strategy: TransformStrategy>(args: UpdateCommand) -> io::Resul
 
     drop(tx);
     for entry in rx.into_iter() {
-        Strategy::transform(&mut out_archive, password, entry.map(Into::into), |entry| {
-            entry.map(Some)
-        })?;
+        Strategy::transform(
+            &mut out_archive,
+            password.as_deref(),
+            entry.map(Into::into).map_err(io::Error::other),
+            |entry| entry.map(Some),
+        )?;
     }
     out_archive.finalize()?;
 

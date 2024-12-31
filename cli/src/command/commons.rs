@@ -10,6 +10,7 @@ use crate::{
         BsdGlobPatterns, PathPartExt,
     },
 };
+use anyhow::Context;
 use path_slash::*;
 use pna::{
     prelude::*, Archive, EntryBuilder, EntryName, EntryPart, EntryReference, NormalEntry,
@@ -122,7 +123,7 @@ pub(crate) fn collect_items(
     gitignore: bool,
     follow_links: bool,
     exclude: Exclude,
-) -> io::Result<Vec<PathBuf>> {
+) -> anyhow::Result<Vec<PathBuf>> {
     let mut files = files.into_iter();
     if let Some(p) = files.next() {
         let mut builder = ignore::WalkBuilder::new(p);
@@ -150,7 +151,7 @@ pub(crate) fn collect_items(
                 Err(e) => Some(Err(e)),
             })
             .collect::<Result<Vec<_>, _>>()
-            .map_err(io::Error::other)
+            .with_context(|| "")
     } else {
         Ok(Vec::new())
     }
@@ -178,7 +179,7 @@ pub(crate) fn create_entry(
         follow_links,
     }: &CreateOptions,
     substitutions: &Option<PathTransformers>,
-) -> io::Result<NormalEntry> {
+) -> anyhow::Result<NormalEntry> {
     let entry_name = if let Some(substitutions) = substitutions {
         EntryName::from(substitutions.apply(path.to_string_lossy(), false, false))
     } else {
@@ -200,7 +201,8 @@ pub(crate) fn create_entry(
             time_options,
             fs::symlink_metadata,
         )?
-        .build();
+        .build()
+        .with_context(|| "");
     } else if path.is_file() {
         let mut entry = EntryBuilder::new_file(entry_name, option)?;
         #[cfg(feature = "memmap")]
@@ -226,9 +228,10 @@ pub(crate) fn create_entry(
             time_options,
             fs::metadata,
         )?
-        .build();
+        .build()
+        .with_context(|| "");
     } else if path.is_dir() {
-        let entry = EntryBuilder::new_dir(entry_name);
+        let entry = EntryBuilder::new_dir(EntryName::from_lossy(path));
         return apply_metadata(
             entry,
             path,
@@ -237,12 +240,14 @@ pub(crate) fn create_entry(
             time_options,
             fs::metadata,
         )?
-        .build();
+        .build()
+        .with_context(|| "");
     }
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "Currently not a regular file is not supported.",
     ))
+    .with_context(|| "")
 }
 
 pub(crate) fn entry_option(

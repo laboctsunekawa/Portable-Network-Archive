@@ -20,9 +20,9 @@ pub mod update;
 pub mod xattr;
 
 use crate::cli::{CipherAlgorithmArgs, Cli, Commands, PasswordArgs};
-use std::{fs, io};
+use std::fs;
 
-fn ask_password(args: PasswordArgs) -> io::Result<Option<String>> {
+fn ask_password(args: PasswordArgs) -> anyhow::Result<Option<String>> {
     if let Some(path) = args.password_file {
         return Ok(Some(fs::read_to_string(path)?));
     };
@@ -31,7 +31,7 @@ fn ask_password(args: PasswordArgs) -> io::Result<Option<String>> {
             log::warn!("Using a password on the command line interface can be insecure.");
             password
         }
-        Some(None) => Some(gix_prompt::securely("Enter password: ").map_err(io::Error::other)?),
+        Some(None) => Some(gix_prompt::securely("Enter password: ")?),
         None => None,
     })
 }
@@ -50,12 +50,12 @@ fn check_password(password: &Option<String>, cipher_args: &CipherAlgorithmArgs) 
 }
 
 pub trait Command {
-    fn execute(self) -> io::Result<()>;
+    fn execute(self) -> anyhow::Result<()>;
 }
 
 impl Command for Cli {
     #[inline]
-    fn execute(self) -> io::Result<()> {
+    fn execute(self) -> anyhow::Result<()> {
         match self.commands {
             Commands::Create(cmd) => cmd.execute(),
             Commands::Append(cmd) => cmd.execute(),

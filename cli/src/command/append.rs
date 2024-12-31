@@ -17,6 +17,7 @@ use crate::{
         PathPartExt,
     },
 };
+use anyhow::Context;
 use clap::{ArgGroup, Parser, ValueHint};
 use pna::Archive;
 use std::{
@@ -183,12 +184,12 @@ pub(crate) struct AppendCommand {
 
 impl Command for AppendCommand {
     #[inline]
-    fn execute(self) -> io::Result<()> {
+    fn execute(self) -> anyhow::Result<()> {
         append_to_archive(self)
     }
 }
 
-fn append_to_archive(args: AppendCommand) -> io::Result<()> {
+fn append_to_archive(args: AppendCommand) -> anyhow::Result<()> {
     let password = ask_password(args.password)?;
     check_password(&password, &args.cipher);
     let archive_path = args.file.archive;
@@ -196,7 +197,8 @@ fn append_to_archive(args: AppendCommand) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("{} is not exists", archive_path.display()),
-        ));
+        ))
+        .with_context(|| format!("{} does not exists", archive_path.display()));
     }
     let password = password.as_deref();
     let option = entry_option(args.compression, args.cipher, args.hash, password);
@@ -261,6 +263,7 @@ fn append_to_archive(args: AppendCommand) -> io::Result<()> {
     )?;
 
     run_append_archive(&create_options, &path_transformers, archive, target_items)
+        .with_context(|| "")
 }
 
 pub(crate) fn run_append_archive(
@@ -268,7 +271,7 @@ pub(crate) fn run_append_archive(
     path_transformers: &Option<PathTransformers>,
     mut archive: Archive<impl io::Write>,
     target_items: Vec<PathBuf>,
-) -> io::Result<()> {
+) -> anyhow::Result<()> {
     let (tx, rx) = std::sync::mpsc::channel();
     for file in target_items {
         let tx = tx.clone();

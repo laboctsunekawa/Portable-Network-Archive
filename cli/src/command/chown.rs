@@ -13,6 +13,7 @@ use crate::{
         GlobPatterns, PathPartExt,
     },
 };
+use anyhow::Context;
 use clap::{ArgGroup, Parser, ValueHint};
 use pna::NormalEntry;
 use std::{io, ops::Not, path::PathBuf, str::FromStr};
@@ -42,12 +43,12 @@ pub(crate) struct ChownCommand {
 
 impl Command for ChownCommand {
     #[inline]
-    fn execute(self) -> io::Result<()> {
+    fn execute(self) -> anyhow::Result<()> {
         archive_chown(self)
     }
 }
 
-fn archive_chown(args: ChownCommand) -> io::Result<()> {
+fn archive_chown(args: ChownCommand) -> anyhow::Result<()> {
     let password = ask_password(args.password)?;
     if args.files.is_empty() {
         return Ok(());
@@ -91,6 +92,7 @@ fn archive_chown(args: ChownCommand) -> io::Result<()> {
             TransformStrategyKeepSolid,
         ),
     }
+    .with_context(|| "failed to combine transforms")
 }
 
 #[inline]
