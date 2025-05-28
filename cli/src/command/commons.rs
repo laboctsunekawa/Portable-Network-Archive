@@ -107,7 +107,9 @@ impl PathTransformers {
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) struct TimeOptions {
+    pub(crate) ctime: Option<SystemTime>,
     pub(crate) mtime: Option<SystemTime>,
+    pub(crate) clamp_ctime: bool,
     pub(crate) clamp_mtime: bool,
 }
 
@@ -275,7 +277,12 @@ pub(crate) fn apply_metadata<'p>(
     if keep_options.keep_timestamp || keep_options.keep_permission {
         let meta = metadata(path)?;
         if keep_options.keep_timestamp {
-            if let Ok(c) = meta.created() {
+            let ctime = clamped_time(
+                meta.created().ok(),
+                time_options.ctime,
+                time_options.clamp_ctime,
+            );
+            if let Some(c) = ctime {
                 if let Ok(created_since_unix_epoch) = c.duration_since(UNIX_EPOCH) {
                     entry.created(created_since_unix_epoch);
                 }

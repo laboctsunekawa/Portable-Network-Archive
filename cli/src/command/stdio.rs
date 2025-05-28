@@ -41,6 +41,7 @@ use std::{fs, io, path::PathBuf, time::SystemTime};
     group(ArgGroup::new("group-flag").args(["numeric_owner", "gname"])),
     group(ArgGroup::new("recursive-flag").args(["recursive", "no_recursive"])),
     group(ArgGroup::new("action-flags").args(["create", "extract", "list", "append"])),
+    group(ArgGroup::new("ctime-flag").args(["clamp_ctime"]).requires("ctime")),
     group(ArgGroup::new("mtime-flag").args(["clamp_mtime"]).requires("mtime")),
 )]
 #[cfg_attr(windows, command(
@@ -152,6 +153,13 @@ pub(crate) struct StdioCommand {
         help = "This is equivalent to --uname \"\" --gname \"\". On create, it causes user and group names to not be stored in the archive. On extract, it causes user and group names in the archive to be ignored in favor of the numeric user and group ids."
     )]
     pub(crate) numeric_owner: bool,
+    #[arg(long, help = "Overrides the creation time")]
+    ctime: Option<DateTime>,
+    #[arg(
+        long,
+        help = "Clamp the creation time of the entries to the specified time by --ctime"
+    )]
+    clamp_ctime: bool,
     #[arg(long, help = "Overrides the modification time")]
     mtime: Option<DateTime>,
     #[arg(
@@ -262,7 +270,9 @@ fn run_create_archive(args: StdioCommand) -> io::Result<()> {
     );
     let path_transformers = PathTransformers::new(args.substitutions, args.transforms);
     let time_options = TimeOptions {
+        ctime: args.ctime.map(|it| it.to_system_time()),
         mtime: args.mtime.map(|it| it.to_system_time()),
+        clamp_ctime: args.clamp_ctime,
         clamp_mtime: args.clamp_mtime,
     };
     let creation_context = CreationContext {
@@ -399,7 +409,9 @@ fn run_append(args: StdioCommand) -> io::Result<()> {
         args.numeric_owner,
     );
     let time_options = TimeOptions {
+        ctime: args.ctime.map(|it| it.to_system_time()),
         mtime: args.mtime.map(|it| it.to_system_time()),
+        clamp_ctime: args.clamp_ctime,
         clamp_mtime: args.clamp_mtime,
     };
     let create_options = CreateOptions {
