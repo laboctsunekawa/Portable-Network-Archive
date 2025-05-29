@@ -12,9 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: write
     steps:
       - name: Checkout code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
       - name: install dependencies
         run: |
           sudo apt update
@@ -22,26 +25,69 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           channel: nightly
-      - name: Run rust-bench
+      - name: Install benchcmp
+        run: cargo install cargo-benchcmp
+      - name: Run benchmark on base
+        if: github.event_name == 'pull_request'
         run: |
-          cargo bench --locked --all-features
+          git fetch origin ${{ github.event.pull_request.base.sha }}
+          git worktree add /tmp/base ${{ github.event.pull_request.base.sha }}
+          (cd /tmp/base && cargo bench --locked --all-features -- --output-format bencher > /tmp/bench_before.txt)
+          git worktree remove /tmp/base
+      - name: Run benchmark on PR
+        run: |
+          cargo bench --locked --all-features -- --output-format bencher > /tmp/bench_after.txt
+      - name: Compare benchmarks
+        if: github.event_name == 'pull_request'
+        run: |
+          cargo benchcmp /tmp/bench_before.txt /tmp/bench_after.txt > /tmp/bench_cmp.txt
+          cat /tmp/bench_cmp.txt
+      - name: Comment PR with benchmark result
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body "\`\`\`\n$(cat /tmp/bench_cmp.txt)\n\`\`\`"
 
   bench-cli:
     name: Run cli bench
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: write
     steps:
       - name: Checkout code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
       - uses: ./.github/actions/setup-rust
       - name: install dependencies
         run: |
           sudo apt update
           sudo apt install -y libacl1-dev
+      - name: Install benchcmp
+        run: cargo install cargo-benchcmp
       - name: Install cli
         run: |
           cargo install --locked --all-features --path cli
-      - name: Run rust-bench
+      - name: Run benchmark on base
+        if: github.event_name == 'pull_request'
         run: |
-          bash ./ci/script/run.sh
+          git fetch origin ${{ github.event.pull_request.base.sha }}
+          git worktree add /tmp/base ${{ github.event.pull_request.base.sha }}
+          (cd /tmp/base && cargo install --locked --all-features --path cli && bash ./ci/script/run.sh > /tmp/bench_before.txt)
+          git worktree remove /tmp/base
+      - name: Run benchmark on PR
+        run: |
+          bash ./ci/script/run.sh > /tmp/bench_after.txt
+      - name: Compare benchmarks
+        if: github.event_name == 'pull_request'
+        run: |
+          cargo benchcmp /tmp/bench_before.txt /tmp/bench_after.txt > /tmp/bench_cmp.txt
+          cat /tmp/bench_cmp.txt
+      - name: Comment PR with benchmark result
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body "\`\`\`\n$(cat /tmp/bench_cmp.txt)\n\`\`\`"
