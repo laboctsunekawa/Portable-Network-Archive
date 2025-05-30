@@ -1,3 +1,4 @@
+use crate::command::diff::DiffCommand;
 use crate::{command, command::Command};
 use clap::{Parser, Subcommand};
 use std::io;
@@ -32,6 +33,7 @@ impl Command for ExperimentalCommand {
             ExperimentalCommands::Acl(cmd) => cmd.execute(),
             ExperimentalCommands::Migrate(cmd) => cmd.execute(),
             ExperimentalCommands::Chunk(cmd) => cmd.execute(),
+            ExperimentalCommands::Diff(cmd) => cmd.execute(),
         }
     }
 }
@@ -56,4 +58,6 @@ pub(crate) enum ExperimentalCommands {
     Migrate(command::migrate::MigrateCommand),
     #[command(about = "Chunk level operation")]
     Chunk(command::chunk::ChunkCommand),
+    #[command(about = "Compare archive entries with file system")]
+    Diff(DiffCommand),
 }
