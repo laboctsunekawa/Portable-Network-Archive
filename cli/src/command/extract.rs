@@ -153,6 +153,8 @@ pub(crate) struct ExtractCommand {
         help = "Allow extract symlink and hardlink that contains root path or parent path"
     )]
     allow_unsafe_links: bool,
+    #[arg(long, help = "Verify archive integrity only without extracting")]
+    verify: bool,
     #[command(flatten)]
     pub(crate) file: FileArgs,
 }
@@ -217,6 +219,17 @@ fn extract_archive(args: ExtractCommand) -> io::Result<()> {
     if args.chroot {
         log::warn!("chroot not supported on this platform");
     };
+    if args.verify {
+        #[cfg(not(feature = "memmap"))]
+        run_verify_archive_reader(archives, || password.as_deref())?;
+        #[cfg(feature = "memmap")]
+        run_verify_archive(archives, || password.as_deref())?;
+        log::info!(
+            "Successfully verified an archive in {}",
+            DurationDisplay(start.elapsed())
+        );
+        return Ok(());
+    }
     #[cfg(not(feature = "memmap"))]
     run_extract_archive_reader(
         archives,
@@ -351,6 +364,39 @@ where
         extract_entry(item, password, &args)?;
     }
     Ok(())
+}
+
+pub(crate) fn run_verify_archive_reader<'p, Provider>(
+    reader: impl IntoIterator<Item = impl Read>,
+    mut password_provider: Provider,
+) -> io::Result<()>
+where
+    Provider: FnMut() -> Option<&'p str>,
+{
+    let password = password_provider();
+    run_process_archive(reader, password_provider, |entry| {
+        let item = entry?;
+        let mut reader = item.reader(ReadOptions::with_password(password))?;
+        io::copy(&mut reader, &mut io::sink())?;
+        Ok(())
+    })
+}
+
+#[cfg(feature = "memmap")]
+pub(crate) fn run_verify_archive<'p, Provider>(
+    archives: Vec<fs::File>,
+    mut password_provider: Provider,
+) -> io::Result<()>
+where
+    Provider: FnMut() -> Option<&'p str>,
+{
+    let password = password_provider();
+    run_entries(archives, password_provider, |entry| {
+        let item = entry?;
+        let mut reader = item.reader(ReadOptions::with_password(password))?;
+        io::copy(&mut reader, &mut io::sink())?;
+        Ok(())
+    })
 }
 
 pub(crate) fn extract_entry<T>(
