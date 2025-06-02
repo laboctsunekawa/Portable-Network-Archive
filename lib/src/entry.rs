@@ -1018,11 +1018,22 @@ fn timestamp(bytes: &[u8]) -> io::Result<Duration> {
 }
 
 #[inline]
-fn u128_from_be_bytes_last(bytes: &[u8]) -> u128 {
-    const BUF_LEN: usize = std::mem::size_of::<u128>();
+const fn u128_from_be_bytes_last(bytes: &[u8]) -> u128 {
+    const BUF_LEN: usize = core::mem::size_of::<u128>();
     let mut buf = [0u8; BUF_LEN];
-    let min = BUF_LEN.min(bytes.len());
-    buf[BUF_LEN - min..].copy_from_slice(&bytes[bytes.len() - min..]);
+    let len = if bytes.len() < BUF_LEN {
+        bytes.len()
+    } else {
+        BUF_LEN
+    };
+    let src_start = bytes.len() - len;
+    let dst_start = BUF_LEN - len;
+    let mut i = 0;
+    while i < len {
+        // SAFETY: indices are within bounds by construction
+        buf[dst_start + i] = unsafe { *bytes.as_ptr().add(src_start + i) };
+        i += 1;
+    }
     u128::from_be_bytes(buf)
 }
 
