@@ -24,7 +24,17 @@ jobs:
           channel: nightly
       - name: Run rust-bench
         run: |
-          cargo bench --locked --all-features
+          cargo bench --locked --all-features -- --output-format bencher | tee bench.log
+      - name: Compare bench results
+        uses: rhysd/github-action-benchmark@v1
+        with:
+          name: rust-bench
+          tool: 'cargo'
+          output-file-path: bench.log
+          gh-pages-branch: gh-pages
+          auto-push: false
+          comment-always: true
+          github-token: ${{ github.token }}
 
   bench-cli:
     name: Run cli bench
