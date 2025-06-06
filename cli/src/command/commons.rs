@@ -22,6 +22,7 @@ use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+use tempfile::Builder;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) struct KeepOptions {
@@ -670,12 +671,12 @@ where
 {
     let password = password_provider();
     let output_path = output_path.as_ref();
-    let random = rand::random::<usize>();
     let temp_dir_path = temp_dir_or_else(|| output_path.parent().unwrap_or_else(|| ".".as_ref()));
     fs::create_dir_all(&temp_dir_path)?;
-    let temp_path = temp_dir_path.join(format!("{}.pna.tmp", random));
-    let outfile = fs::File::create(&temp_path)?;
-    let mut out_archive = Archive::write_header(outfile)?;
+    let mut outfile = Builder::new()
+        .suffix(".pna.tmp")
+        .tempfile_in(&temp_dir_path)?;
+    let mut out_archive = Archive::write_header(outfile.as_file_mut())?;
 
     run_read_entries_mem(archives, |entry| {
         Transform::transform(&mut out_archive, password, entry, &mut processor)
@@ -685,7 +686,7 @@ where
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    utils::fs::mv(temp_path, output_path)?;
+    outfile.persist(output_path)?;
     Ok(())
 }
 
@@ -717,12 +718,12 @@ where
 {
     let password = password_provider();
     let output_path = output_path.as_ref();
-    let random = rand::random::<usize>();
     let temp_dir_path = temp_dir_or_else(|| output_path.parent().unwrap_or_else(|| ".".as_ref()));
     fs::create_dir_all(&temp_dir_path)?;
-    let temp_path = temp_dir_path.join(format!("{random}.pna.tmp"));
-    let outfile = fs::File::create(&temp_path)?;
-    let mut out_archive = Archive::write_header(outfile)?;
+    let mut outfile = Builder::new()
+        .suffix(".pna.tmp")
+        .tempfile_in(&temp_dir_path)?;
+    let mut out_archive = Archive::write_header(outfile.as_file_mut())?;
 
     run_read_entries(archives, |entry| {
         Transform::transform(&mut out_archive, password, entry, &mut processor)
@@ -732,7 +733,7 @@ where
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    utils::fs::mv(temp_path, output_path)?;
+    outfile.persist(output_path)?;
     Ok(())
 }
 
