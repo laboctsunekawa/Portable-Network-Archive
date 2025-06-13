@@ -24,6 +24,7 @@ use pna::{
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     collections::{BTreeSet, HashMap},
     fmt::{self, Display, Formatter},
     io::{self, prelude::*},
@@ -881,7 +882,7 @@ fn tree_entries(entries: impl IntoParallelIterator<Item = TableRow>, options: Li
         .map(|(name, kind)| (name.as_str(), *kind))
         .collect::<Vec<_>>();
     let map = build_tree_map(&entries);
-    let tree = build_term_tree(&map, "", DataKind::Directory, &options);
+    let tree = build_term_tree(&map, Cow::Borrowed(""), None, DataKind::Directory, &options);
     println!("{tree}");
 }
 
@@ -908,40 +909,45 @@ fn build_tree_map<'s>(paths: &[(&'s str, DataKind)]) -> HashMap<&'s str, BTreeSe
     tree
 }
 
-fn build_term_tree(
-    tree: &HashMap<&str, BTreeSet<TreeEntry<'_>>>,
-    root: &str,
+fn build_term_tree<'a>(
+    tree: &HashMap<&'a str, BTreeSet<TreeEntry<'a>>>,
+    root: Cow<'a, str>,
+    name: Option<&'a str>,
     kind: DataKind,
     options: &ListOptions,
-) -> Tree<String> {
-    let label = if root.is_empty() {
-        String::from(".")
-    } else {
-        let name = root.rsplit('/').next().unwrap_or(root);
-        format_name(name, kind, options)
+) -> Tree<Cow<'a, str>> {
+    let label = match name {
+        None => Cow::Borrowed("."),
+        Some(n) => format_name(n, kind, options),
     };
     let mut node = Tree::new(label);
-    if let Some(children) = tree.get(root) {
+    if let Some(children) = tree.get(root.as_ref()) {
         for entry in children {
             let child_root = if root.is_empty() {
-                entry.name.to_string()
+                Cow::Borrowed(entry.name)
             } else {
-                format!("{root}/{name}", name = entry.name)
+                Cow::Owned(format!("{}/{}", root, entry.name))
             };
-            node.push(build_term_tree(tree, &child_root, entry.kind, options));
+            node.push(build_term_tree(
+                tree,
+                child_root,
+                Some(entry.name),
+                entry.kind,
+                options,
+            ));
         }
     }
     node
 }
 
-fn format_name(name: &str, kind: DataKind, options: &ListOptions) -> String {
+fn format_name<'a>(name: &'a str, kind: DataKind, options: &ListOptions) -> Cow<'a, str> {
     let name = match kind {
-        DataKind::Directory if options.classify => format!("{name}/"),
-        DataKind::SymbolicLink if options.classify => format!("{name}@"),
-        _ => name.to_string(),
+        DataKind::Directory if options.classify => Cow::Owned(format!("{name}/")),
+        DataKind::SymbolicLink if options.classify => Cow::Owned(format!("{name}@")),
+        _ => Cow::Borrowed(name),
     };
     if options.hide_control_chars {
-        hide_control_chars(&name)
+        Cow::Owned(hide_control_chars(name.as_ref()))
     } else {
         name
     }
