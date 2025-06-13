@@ -39,6 +39,7 @@ thiserror = "2.0.12"
 rand = "0.8.5"
 indexmap = "2.9.0"
 log = "0.4.27"
+termtree = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30.1", features = ["user"] }
