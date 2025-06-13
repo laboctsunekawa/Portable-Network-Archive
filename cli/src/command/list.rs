@@ -24,7 +24,6 @@ use pna::{
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
-    borrow::Cow,
     collections::{BTreeSet, HashMap},
     fmt::{self, Display, Formatter},
     io::{self, prelude::*},
@@ -40,6 +39,7 @@ use tabled::{
         Alignment, Color, Modify, Padding, PaddingColor, Style as TableStyle,
     },
 };
+use termtree::Tree;
 
 #[derive(Parser, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 #[clap(disable_help_flag = true)]
@@ -880,12 +880,12 @@ fn tree_entries(entries: impl IntoParallelIterator<Item = TableRow>, options: Li
         .par_iter()
         .map(|(name, kind)| (name.as_str(), *kind))
         .collect::<Vec<_>>();
-    let tree = build_tree(&entries);
-    println!(".");
-    display_tree(&tree, "", "", &options);
+    let map = build_tree_map(&entries);
+    let tree = build_term_tree(&map, "", DataKind::Directory, &options);
+    println!("{tree}");
 }
 
-fn build_tree<'s>(paths: &[(&'s str, DataKind)]) -> HashMap<&'s str, BTreeSet<TreeEntry<'s>>> {
+fn build_tree_map<'s>(paths: &[(&'s str, DataKind)]) -> HashMap<&'s str, BTreeSet<TreeEntry<'s>>> {
     let mut tree: HashMap<_, BTreeSet<_>> = HashMap::new();
 
     for (path, kind) in paths {
@@ -908,42 +908,41 @@ fn build_tree<'s>(paths: &[(&'s str, DataKind)]) -> HashMap<&'s str, BTreeSet<Tr
     tree
 }
 
-fn display_tree(
-    tree: &HashMap<&str, BTreeSet<TreeEntry>>,
+fn build_term_tree(
+    tree: &HashMap<&str, BTreeSet<TreeEntry<'_>>>,
     root: &str,
-    prefix: &str,
+    kind: DataKind,
     options: &ListOptions,
-) {
+) -> Tree<String> {
+    let label = if root.is_empty() {
+        String::from(".")
+    } else {
+        let name = root.rsplit('/').next().unwrap_or(root);
+        format_name(name, kind, options)
+    };
+    let mut node = Tree::new(label);
     if let Some(children) = tree.get(root) {
-        for (i, TreeEntry { name: child, kind }) in children.iter().enumerate() {
-            let is_last = i == children.len() - 1;
-            let branch = if is_last { "└── " } else { "├── " };
-            match kind {
-                DataKind::Directory if options.classify => {
-                    println!("{prefix}{branch}{child}/")
-                }
-                DataKind::SymbolicLink if options.classify => {
-                    println!("{prefix}{branch}{child}@")
-                }
-                DataKind::File
-                | DataKind::Directory
-                | DataKind::SymbolicLink
-                | DataKind::HardLink => println!("{prefix}{branch}{child}"),
-            };
-
-            let new_root = if root.is_empty() {
-                Cow::Borrowed(*child)
+        for entry in children {
+            let child_root = if root.is_empty() {
+                entry.name.to_string()
             } else {
-                Cow::Owned(format!("{root}/{child}"))
+                format!("{root}/{name}", name = entry.name)
             };
-
-            let new_prefix = if is_last {
-                format!("{prefix}    ")
-            } else {
-                format!("{prefix}│   ")
-            };
-
-            display_tree(tree, &new_root, &new_prefix, options);
+            node.push(build_term_tree(tree, &child_root, entry.kind, options));
         }
+    }
+    node
+}
+
+fn format_name(name: &str, kind: DataKind, options: &ListOptions) -> String {
+    let name = match kind {
+        DataKind::Directory if options.classify => format!("{name}/"),
+        DataKind::SymbolicLink if options.classify => format!("{name}@"),
+        _ => name.to_string(),
+    };
+    if options.hide_control_chars {
+        hide_control_chars(&name)
+    } else {
+        name
     }
 }
