@@ -347,6 +347,44 @@ fn update_archive<Strategy: TransformStrategy>(args: UpdateCommand) -> io::Resul
         .map(|it| (EntryName::from_lossy(&it), it))
         .collect::<IndexMap<_, _>>();
 
+    #[cfg(feature = "memmap")]
+    {
+        let mmaps = archives
+            .into_iter()
+            .map(crate::utils::mmap::Mmap::try_from)
+            .collect::<io::Result<Vec<_>>>()?;
+        let archive_slices = mmaps.iter().map(|m| m.as_ref()).collect::<Vec<_>>();
+        run_read_entries(archive_slices, |entry| {
+            Strategy::transform(&mut out_archive, password, entry, |entry| {
+                let entry = entry?;
+                if let Some(target_path) =
+                    target_files_mapping.swap_remove(entry.header().path())
+                {
+                    if need_update_condition(&target_path, entry.metadata()).unwrap_or(true)
+                    {
+                        let tx = tx.clone();
+                        rayon::scope_fifo(|s| {
+                            s.spawn_fifo(|_| {
+                                log::debug!("Updating: {}", target_path.display());
+                                tx.send(create_entry(
+                                    &target_path,
+                                    &create_options,
+                                    &path_transformers,
+                                ))
+                                .unwrap_or_else(|e| panic!("{e}: {}", target_path.display()));
+                            });
+                        });
+                        Ok(None)
+                    } else {
+                        Ok(Some(entry))
+                    }
+                } else {
+                    Ok(Some(entry))
+                }
+            })
+        })?
+    }
+    #[cfg(not(feature = "memmap"))]
     run_read_entries(archives, |entry| {
         Strategy::transform(&mut out_archive, password, entry, |entry| {
             let entry = entry?;

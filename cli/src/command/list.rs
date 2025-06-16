@@ -380,8 +380,13 @@ pub(crate) fn run_list_archive_mem(
     args: ListOptions,
 ) -> io::Result<()> {
     let mut entries = Vec::new();
+    let archives = archives
+        .into_iter()
+        .map(crate::utils::mmap::Mmap::try_from)
+        .collect::<io::Result<Vec<_>>>()?;
+    let archive_slices = archives.iter().map(|m| m.as_ref()).collect::<Vec<_>>();
 
-    run_read_entries_mem(archives, |entry| {
+    run_read_entries_mem(archive_slices, |entry| {
         match entry? {
             ReadEntry::Solid(solid) if args.solid => {
                 for entry in solid.entries(password)? {

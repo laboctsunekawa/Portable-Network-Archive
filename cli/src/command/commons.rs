@@ -593,17 +593,15 @@ where
 }
 
 #[cfg(feature = "memmap")]
-pub(crate) fn run_across_archive_mem<F>(archives: Vec<fs::File>, mut processor: F) -> io::Result<()>
+pub(crate) fn run_across_archive_mem<'d, F>(
+    archives: Vec<&'d [u8]>,
+    mut processor: F,
+) -> io::Result<()>
 where
-    F: FnMut(&mut Archive<&[u8]>) -> io::Result<()>,
+    F: FnMut(&mut Archive<&'d [u8]>) -> io::Result<()>,
 {
-    let archives = archives
-        .into_iter()
-        .map(utils::mmap::Mmap::try_from)
-        .collect::<io::Result<Vec<_>>>()?;
-
     let mut idx = 0;
-    let mut archive = Archive::read_header_from_slice(&archives[idx])?;
+    let mut archive = Archive::read_header_from_slice(archives[idx])?;
 
     loop {
         processor(&mut archive)?;
@@ -617,15 +615,18 @@ where
                 "Archive is split, but no subsequent archives are found",
             ));
         }
-        archive = archive.read_next_archive_from_slice(&archives[idx][..])?;
+        archive = archive.read_next_archive_from_slice(archives[idx])?;
     }
     Ok(())
 }
 
 #[cfg(feature = "memmap")]
-pub(crate) fn run_read_entries_mem<F>(archives: Vec<fs::File>, mut processor: F) -> io::Result<()>
+pub(crate) fn run_read_entries_mem<'d, F>(
+    archives: Vec<&'d [u8]>,
+    mut processor: F,
+) -> io::Result<()>
 where
-    F: FnMut(io::Result<ReadEntry<std::borrow::Cow<[u8]>>>) -> io::Result<()>,
+    F: FnMut(io::Result<ReadEntry<std::borrow::Cow<'d, [u8]>>>) -> io::Result<()>,
 {
     run_across_archive_mem(archives, |archive| {
         archive.entries_slice().try_for_each(&mut processor)
@@ -643,7 +644,12 @@ where
     F: FnMut(io::Result<NormalEntry<std::borrow::Cow<[u8]>>>) -> io::Result<()>,
 {
     let password = password_provider();
-    run_read_entries_mem(archives, |entry| match entry? {
+    let archives = archives
+        .into_iter()
+        .map(utils::mmap::Mmap::try_from)
+        .collect::<io::Result<Vec<_>>>()?;
+    let archive_slices = archives.iter().map(|m| m.as_ref()).collect::<Vec<_>>();
+    run_read_entries_mem(archive_slices, |entry| match entry? {
         ReadEntry::Solid(s) => s
             .entries(password)?
             .try_for_each(|r| processor(r.map(Into::into))),
@@ -676,7 +682,13 @@ where
     let outfile = fs::File::create(&temp_path)?;
     let mut out_archive = Archive::write_header(outfile)?;
 
-    run_read_entries_mem(archives, |entry| {
+    let archives = archives
+        .into_iter()
+        .map(utils::mmap::Mmap::try_from)
+        .collect::<io::Result<Vec<_>>>()?;
+    let archive_slices = archives.iter().map(|m| m.as_ref()).collect::<Vec<_>>();
+
+    run_read_entries_mem(archive_slices, |entry| {
         Transform::transform(&mut out_archive, password, entry, &mut processor)
     })?;
 
