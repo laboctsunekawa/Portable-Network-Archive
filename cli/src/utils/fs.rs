@@ -2,6 +2,7 @@ mod owner;
 
 #[cfg(windows)]
 use crate::utils::os::windows::{self, fs::*};
+use anyhow::Context;
 pub(crate) use owner::*;
 pub(crate) use pna::fs::*;
 use std::{
@@ -10,8 +11,10 @@ use std::{
     path::Path,
 };
 
-pub(crate) fn is_pna<P: AsRef<Path>>(path: P) -> io::Result<bool> {
-    let file = fs::File::open(path)?;
+pub(crate) fn is_pna<P: AsRef<Path>>(path: P) -> anyhow::Result<bool> {
+    let path_ref = path.as_ref();
+    let file = fs::File::open(path_ref)
+        .with_context(|| format!("failed to open {}", path_ref.display()))?;
     super::io::is_pna(file)
 }
 
@@ -45,11 +48,15 @@ pub(crate) fn mv<Src: AsRef<Path>, Dist: AsRef<Path>>(src: Src, dist: Dist) -> i
     inner(src.as_ref(), dist.as_ref())
 }
 
-pub(crate) fn read_to_lines<P: AsRef<Path>>(path: P) -> io::Result<Vec<String>> {
-    fn inner(path: &Path) -> io::Result<Vec<String>> {
-        let file = fs::File::open(path)?;
+pub(crate) fn read_to_lines<P: AsRef<Path>>(path: P) -> anyhow::Result<Vec<String>> {
+    fn inner(path: &Path) -> anyhow::Result<Vec<String>> {
+        let file =
+            fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
         let reader = io::BufReader::new(file);
-        reader.lines().collect::<io::Result<Vec<_>>>()
+        reader
+            .lines()
+            .collect::<io::Result<Vec<_>>>()
+            .with_context(|| format!("failed to read lines from {}", path.display()))
     }
     inner(path.as_ref())
 }
