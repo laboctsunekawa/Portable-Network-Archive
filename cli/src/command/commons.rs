@@ -157,12 +157,15 @@ pub(crate) fn collect_items(
     }
 }
 
-pub(crate) fn collect_split_archives(first: impl AsRef<Path>) -> io::Result<Vec<fs::File>> {
+pub(crate) fn collect_split_archives(first: impl AsRef<Path>) -> anyhow::Result<Vec<fs::File>> {
     let mut archives = Vec::new();
     let mut n = 1;
     let mut target_archive = Cow::from(first.as_ref());
     while fs::exists(&target_archive)? {
-        archives.push(fs::File::open(&target_archive)?);
+        archives.push(
+            fs::File::open(&target_archive)
+                .with_context(|| format!("failed to open {}", target_archive.display()))?,
+        );
         n += 1;
         target_archive = target_archive.with_part(n).expect("").into();
     }
@@ -758,7 +761,7 @@ pub(crate) fn write_split_archive(
     entries: impl Iterator<Item = io::Result<impl Entry + Sized>>,
     max_file_size: usize,
     overwrite: bool,
-) -> io::Result<()> {
+) -> anyhow::Result<()> {
     write_split_archive_path(
         archive,
         entries,
@@ -774,7 +777,7 @@ pub(crate) fn write_split_archive_path<F, P>(
     mut get_part_path: F,
     max_file_size: usize,
     overwrite: bool,
-) -> io::Result<()>
+) -> anyhow::Result<()>
 where
     F: FnMut(&Path, usize) -> P,
     P: AsRef<Path>,
@@ -782,7 +785,8 @@ where
     let archive = archive.as_ref();
     let first_item_path = get_part_path(archive, 1);
     let first_item_path = first_item_path.as_ref();
-    let file = utils::fs::file_create(first_item_path, overwrite)?;
+    let file = utils::fs::file_create(first_item_path, overwrite)
+        .with_context(|| format!("failed to create {}", first_item_path.display()))?;
     write_split_archive_writer(
         file,
         entries,
@@ -803,14 +807,15 @@ pub(crate) fn write_split_archive_writer<W, F, C>(
     mut get_next_writer: F,
     max_file_size: usize,
     mut on_complete: C,
-) -> io::Result<()>
+) -> anyhow::Result<()>
 where
     W: Write,
     F: FnMut(usize) -> io::Result<W>,
     C: FnMut(usize) -> io::Result<()>,
 {
     let mut part_num = 1;
-    let mut writer = Archive::write_header(initial_writer)?;
+    let mut writer =
+        Archive::write_header(initial_writer).with_context(|| "failed to write archive header")?;
 
     // NOTE: max_file_size - (PNA_HEADER + AHED + ANXT + AEND)
     let max_file_size = max_file_size - (PNA_HEADER.len() + MIN_CHUNK_BYTES_SIZE * 3 + 8);
@@ -826,13 +831,19 @@ where
             if written_entry_size + part.bytes_len() > max_file_size {
                 part_num += 1;
                 let file = get_next_writer(part_num)?;
-                writer = writer.split_to_next_archive(file)?;
+                writer = writer
+                    .split_to_next_archive(file)
+                    .with_context(|| format!("failed to create archive part {part_num}"))?;
                 written_entry_size = 0;
             }
-            written_entry_size += writer.add_entry_part(part)?;
+            written_entry_size += writer
+                .add_entry_part(part)
+                .with_context(|| "failed to add entry part")?;
         }
     }
-    writer.finalize()?;
+    writer
+        .finalize()
+        .with_context(|| "failed to finalize archive")?;
     on_complete(part_num)?;
     Ok(())
 }
