@@ -151,7 +151,7 @@ pub(crate) fn collect_items(
                 Err(e) => Some(Err(e)),
             })
             .collect::<Result<Vec<_>, _>>()
-            .with_context(|| "")
+            .with_context(|| "failed to collect input files")
     } else {
         Ok(Vec::new())
     }
@@ -202,7 +202,7 @@ pub(crate) fn create_entry(
             fs::symlink_metadata,
         )?
         .build()
-        .with_context(|| "");
+        .with_context(|| format!("failed to build symlink entry for {}", path.display()));
     } else if path.is_file() {
         let mut entry = EntryBuilder::new_file(entry_name, option)?;
         #[cfg(feature = "memmap")]
@@ -229,7 +229,7 @@ pub(crate) fn create_entry(
             fs::metadata,
         )?
         .build()
-        .with_context(|| "");
+        .with_context(|| format!("failed to build file entry for {}", path.display()));
     } else if path.is_dir() {
         let entry = EntryBuilder::new_dir(EntryName::from_lossy(path));
         return apply_metadata(
@@ -241,13 +241,13 @@ pub(crate) fn create_entry(
             fs::metadata,
         )?
         .build()
-        .with_context(|| "");
+        .with_context(|| format!("failed to build directory entry for {}", path.display()));
     }
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "Currently not a regular file is not supported.",
     ))
-    .with_context(|| "")
+    .with_context(|| format!("unsupported file type: {}", path.display()))
 }
 
 pub(crate) fn entry_option(

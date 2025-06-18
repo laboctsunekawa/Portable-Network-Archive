@@ -236,7 +236,8 @@ fn update_archive<Strategy: TransformStrategy>(args: UpdateCommand) -> anyhow::R
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("{} is not exists", archive_path.display()),
-        ))?;
+        ))
+        .with_context(|| "archive not found");
     }
     let password = password.as_deref();
     let option = entry_option(args.compression, args.cipher, args.hash, password);
@@ -392,7 +393,7 @@ fn update_archive<Strategy: TransformStrategy>(args: UpdateCommand) -> anyhow::R
     for entry in rx.into_iter() {
         Strategy::transform(
             &mut out_archive,
-            password.as_deref(),
+            password,
             entry.map(Into::into).map_err(io::Error::other),
             |entry| entry.map(Some),
         )?;

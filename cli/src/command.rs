@@ -20,11 +20,14 @@ pub mod update;
 pub mod xattr;
 
 use crate::cli::{CipherAlgorithmArgs, Cli, Commands, PasswordArgs};
+use anyhow::Context;
 use std::fs;
 
 fn ask_password(args: PasswordArgs) -> anyhow::Result<Option<String>> {
     if let Some(path) = args.password_file {
-        return Ok(Some(fs::read_to_string(path)?));
+        return Ok(Some(fs::read_to_string(&path).with_context(|| {
+            format!("failed to read password file {}", path.display())
+        })?));
     };
     Ok(match args.password {
         Some(password @ Some(_)) => {
