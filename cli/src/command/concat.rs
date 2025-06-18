@@ -33,7 +33,12 @@ fn concat_entry(args: ConcatCommand) -> anyhow::Result<()> {
             io::ErrorKind::AlreadyExists,
             format!("{} already exists", args.files.archive.display()),
         ))
-        .with_context(|| "");
+        .with_context(|| {
+            format!(
+                "output archive {} already exists",
+                args.files.archive.display()
+            )
+        });
     }
     for item in &args.files.files {
         if !utils::fs::is_pna(item)? {
@@ -41,7 +46,7 @@ fn concat_entry(args: ConcatCommand) -> anyhow::Result<()> {
                 io::ErrorKind::InvalidData,
                 format!("{item} is not a pna file"),
             ))
-            .with_context(|| "");
+            .with_context(|| format!("{} is not a valid pna archive", item));
         }
     }
     let file = utils::fs::file_create(&args.files.archive, args.overwrite)?;

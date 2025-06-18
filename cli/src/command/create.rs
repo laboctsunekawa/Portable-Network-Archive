@@ -17,6 +17,7 @@ use crate::{
         re::{bsd::SubstitutionRule, gnu::TransformRule},
     },
 };
+use anyhow::Context;
 use bytesize::ByteSize;
 use clap::{ArgGroup, Parser, ValueHint};
 use pna::{Archive, SolidEntryBuilder, WriteOptions};
@@ -212,7 +213,8 @@ fn create_archive(args: CreateCommand) -> anyhow::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             format!("{} already exists", archive.display()),
-        ))?;
+        ))
+        .with_context(|| "archive already exists");
     }
     log::info!("Create an archive: {}", archive.display());
     let mut files = args.file.files;

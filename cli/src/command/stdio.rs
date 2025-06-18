@@ -230,7 +230,7 @@ fn run_stdio(args: StdioCommand) -> anyhow::Result<()> {
     } else if args.list {
         run_list_archive(args)
     } else if args.append {
-        run_append(args).with_context(|| "")
+        run_append(args).with_context(|| "failed to append using stdio mode")
     } else {
         unreachable!()
     }
@@ -493,6 +493,6 @@ fn run_append(args: StdioCommand) -> anyhow::Result<()> {
             output_archive,
             target_items,
         )
-        .with_context(|| "")
+        .with_context(|| "failed to append archive from stdio")
     }
 }

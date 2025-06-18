@@ -6,6 +6,7 @@ use crate::command::{
     extract::ExtractCommand, list::ListCommand, split::SplitCommand, strip::StripCommand,
     xattr::XattrCommand,
 };
+use anyhow::Context;
 use clap::{value_parser, ArgGroup, Parser, Subcommand, ValueEnum, ValueHint};
 use log::{Level, LevelFilter};
 use pna::HashAlgorithm;
@@ -41,7 +42,9 @@ impl Cli {
                 Level::Info | Level::Debug | Level::Trace => out.finish(*msg),
             })
             .chain(io::stderr());
-        base.chain(stderr).apply()?;
+        base.chain(stderr)
+            .apply()
+            .with_context(|| "failed to initialize logger")?;
         Ok(())
     }
 }

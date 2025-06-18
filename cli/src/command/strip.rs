@@ -91,7 +91,7 @@ fn strip_metadata(args: StripCommand) -> anyhow::Result<()> {
             TransformStrategyKeepSolid,
         ),
     }
-    .with_context(|| "")
+    .with_context(|| "failed to strip archive")
 }
 
 #[inline]

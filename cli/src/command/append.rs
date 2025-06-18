@@ -263,7 +263,7 @@ fn append_to_archive(args: AppendCommand) -> anyhow::Result<()> {
     )?;
 
     run_append_archive(&create_options, &path_transformers, archive, target_items)
-        .with_context(|| "")
+        .with_context(|| "failed to append files to archive")
 }
 
 pub(crate) fn run_append_archive(

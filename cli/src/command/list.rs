@@ -292,12 +292,12 @@ fn list_archive(args: ListCommand) -> anyhow::Result<()> {
             exclude,
             options,
         )
-        .with_context(|| "")
+        .with_context(|| "failed to list archive contents")
     }
     #[cfg(feature = "memmap")]
     {
         run_list_archive_mem(archives, password.as_deref(), files_globs, exclude, options)
-            .with_context(|| "")
+            .with_context(|| "failed to list archive contents")
     }
 }
 
