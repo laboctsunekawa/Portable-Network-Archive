@@ -675,7 +675,8 @@ where
     let temp_dir_path = temp_dir_or_else(|| output_path.parent().unwrap_or_else(|| ".".as_ref()));
     fs::create_dir_all(&temp_dir_path)?;
     let temp_path = temp_dir_path.join(format!("{}.pna.tmp", random));
-    let outfile = fs::File::create(&temp_path)?;
+    let outfile = fs::File::create(&temp_path)
+        .with_context(|| format!("failed to create temp file: {}", temp_path.display()))?;
     let mut out_archive = Archive::write_header(outfile)?;
 
     run_read_entries_mem(archives, |entry| {
@@ -686,8 +687,13 @@ where
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    utils::fs::mv(temp_path, output_path)?;
-    Ok(())
+    utils::fs::mv(&temp_path, output_path).with_context(|| {
+        format!(
+            "failed to move file {} to {}",
+            temp_path.display(),
+            output_path.display()
+        )
+    })
 }
 
 pub(crate) fn run_read_entries<F>(
