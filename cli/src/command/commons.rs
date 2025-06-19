@@ -10,6 +10,7 @@ use crate::{
         BsdGlobPatterns, PathPartExt,
     },
 };
+use anyhow::Context;
 use path_slash::*;
 use pna::{
     prelude::*, Archive, EntryBuilder, EntryName, EntryPart, EntryReference, NormalEntry,
@@ -732,8 +733,13 @@ where
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    utils::fs::mv(temp_path, output_path)?;
-    Ok(())
+    utils::fs::mv(&temp_path, output_path).with_context(|| {
+        format!(
+            "failed to move file {} to {}",
+            temp_path.display(),
+            output_path.display()
+        )
+    })
 }
 
 #[cfg(not(feature = "memmap"))]
