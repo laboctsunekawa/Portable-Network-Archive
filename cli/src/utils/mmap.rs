@@ -1,7 +1,6 @@
 use std::{fs, io, ops::Deref, path::Path};
 
 pub(crate) struct Mmap {
-    _file: fs::File,
     inner: memmap2::Mmap,
 }
 
@@ -36,6 +35,6 @@ impl TryFrom<fs::File> for Mmap {
     #[inline]
     fn try_from(file: fs::File) -> Result<Self, Self::Error> {
         let inner = unsafe { memmap2::Mmap::map(&file) }?;
-        Ok(Mmap { _file: file, inner })
+        Ok(Mmap { inner })
     }
 }
