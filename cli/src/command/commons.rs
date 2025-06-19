@@ -722,7 +722,8 @@ where
     let temp_dir_path = temp_dir_or_else(|| output_path.parent().unwrap_or_else(|| ".".as_ref()));
     fs::create_dir_all(&temp_dir_path)?;
     let temp_path = temp_dir_path.join(format!("{random}.pna.tmp"));
-    let outfile = fs::File::create(&temp_path)?;
+    let outfile = fs::File::create(&temp_path)
+        .with_context(|| format!("failed to create temp file: {}", temp_path.display()))?;
     let mut out_archive = Archive::write_header(outfile)?;
 
     run_read_entries(archives, |entry| {
