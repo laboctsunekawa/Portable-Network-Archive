@@ -23,12 +23,45 @@ pub(crate) enum SortBy {
     Atime,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, ValueEnum)]
+impl Display for SortBy {
+    #[inline]
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            SortBy::Name => "name",
+            SortBy::Ctime => "ctime",
+            SortBy::Mtime => "mtime",
+            SortBy::Atime => "atime",
+        })
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub(crate) enum SortOrder {
-    #[value(alias("asc"))]
     Asc,
-    #[value(alias("desc"))]
     Desc,
+}
+
+impl Display for SortOrder {
+    #[inline]
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            SortOrder::Asc => "asc",
+            SortOrder::Desc => "desc",
+        })
+    }
+}
+
+impl FromStr for SortOrder {
+    type Err = String;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "asc" => Ok(Self::Asc),
+            "desc" => Ok(Self::Desc),
+            _ => Err("only allowed `asc` or `desc`".into()),
+        }
+    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
@@ -48,15 +81,10 @@ impl Default for SortKey {
 
 impl Display for SortKey {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let by_val = self.by.to_possible_value().expect("No skipped variants");
-        let by = by_val.get_name();
-        match self.order {
-            SortOrder::Asc => f.write_str(by),
-            SortOrder::Desc => {
-                let order_val = self.order.to_possible_value().expect("No skipped variants");
-                let order = order_val.get_name();
-                write!(f, "{by}:{order}")
-            }
+        if self.order == SortOrder::Asc {
+            write!(f, "{}", self.by)
+        } else {
+            write!(f, "{}:{}", self.by, self.order)
         }
     }
 }
@@ -71,7 +99,7 @@ impl FromStr for SortKey {
         };
         let by = SortBy::from_str(by, true)?;
         let order = match order {
-            Some(o) => SortOrder::from_str(o, true)?,
+            Some(o) => SortOrder::from_str(o)?,
             None => SortOrder::Asc,
         };
         Ok(Self { by, order })
@@ -152,4 +180,44 @@ fn sort_archive(args: SortCommand) -> anyhow::Result<()> {
     temp_file.persist(output)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_sort_key_default_order() {
+        assert_eq!(
+            SortKey::from_str("name").unwrap(),
+            SortKey {
+                by: SortBy::Name,
+                order: SortOrder::Asc,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_sort_key_explicit_orders() {
+        assert_eq!(
+            SortKey::from_str("name:asc").unwrap(),
+            SortKey {
+                by: SortBy::Name,
+                order: SortOrder::Asc,
+            }
+        );
+        assert_eq!(
+            SortKey::from_str("name:desc").unwrap(),
+            SortKey {
+                by: SortBy::Name,
+                order: SortOrder::Desc,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_sort_key_invalid() {
+        assert!(SortKey::from_str("name:foo").is_err());
+        assert!(SortKey::from_str("foo").is_err());
+    }
 }
