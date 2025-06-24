@@ -7,7 +7,7 @@ use crate::{
     },
     utils::{env::NamedTempFile, PathPartExt},
 };
-use clap::{Parser, ValueEnum, ValueHint};
+use clap::{Parser, ValueHint};
 use pna::{Archive, NormalEntry};
 use std::path::PathBuf;
 use std::{
@@ -15,7 +15,7 @@ use std::{
     str::FromStr,
 };
 
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, ValueEnum)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub(crate) enum SortBy {
     Name,
     Ctime,
@@ -32,6 +32,21 @@ impl Display for SortBy {
             SortBy::Mtime => "mtime",
             SortBy::Atime => "atime",
         })
+    }
+}
+
+impl FromStr for SortBy {
+    type Err = String;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "name" => Ok(Self::Name),
+            "ctime" => Ok(Self::Ctime),
+            "mtime" => Ok(Self::Mtime),
+            "atime" => Ok(Self::Atime),
+            _ => Err("allowed values: name, ctime, mtime, atime".into()),
+        }
     }
 }
 
@@ -97,7 +112,7 @@ impl FromStr for SortKey {
             Some((b, o)) => (b, Some(o)),
             None => (s, None),
         };
-        let by = SortBy::from_str(by, true)?;
+        let by = SortBy::from_str(by)?;
         let order = match order {
             Some(o) => SortOrder::from_str(o)?,
             None => SortOrder::Asc,
