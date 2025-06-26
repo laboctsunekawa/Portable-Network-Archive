@@ -9,7 +9,7 @@ use crate::{
             collect_items, create_entry, entry_option, write_split_archive, CreateOptions, Exclude,
             KeepOptions, OwnerOptions, PathTransformers, TimeOptions,
         },
-        Command,
+        incremental, Command,
     },
     utils::{
         self,
@@ -24,7 +24,7 @@ use std::{
     env, fs,
     io::{self, prelude::*},
     path::{Path, PathBuf},
-    time::Instant,
+    time::{Instant, SystemTime},
 };
 
 #[derive(Parser, Clone, Debug)]
@@ -104,6 +104,12 @@ pub(crate) struct CreateCommand {
     pub(crate) split: Option<Option<ByteSize>>,
     #[arg(long, help = "Create an archive in solid mode")]
     pub(crate) solid: bool,
+    #[arg(
+        long = "listed-incremental",
+        value_name = "FILE",
+        help = "Create incremental archive using snapshot file"
+    )]
+    pub(crate) listed_incremental: Option<PathBuf>,
     #[arg(long, help = "Archiving user to the entries from given name")]
     pub(crate) uname: Option<String>,
     #[arg(long, help = "Archiving group to the entries from given name")]
@@ -236,7 +242,7 @@ fn create_archive(args: CreateCommand) -> anyhow::Result<()> {
     if let Some(working_dir) = args.working_dir {
         env::set_current_dir(working_dir)?;
     }
-    let target_items = collect_items(
+    let mut target_items = collect_items(
         &files,
         !args.no_recursive,
         args.keep_dir,
@@ -244,6 +250,20 @@ fn create_archive(args: CreateCommand) -> anyhow::Result<()> {
         args.follow_links,
         exclude,
     )?;
+
+    let mut snapshot_new = incremental::Snapshot::default();
+    if let Some(ref snapshot_path) = args.listed_incremental {
+        let snapshot_old = incremental::load_snapshot(snapshot_path)?;
+        target_items.retain(|item| match fs::metadata(item) {
+            Ok(meta) => {
+                let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                snapshot_new.insert(item.clone(), mtime);
+                !matches!(snapshot_old.get(item), Some(prev) if mtime <= prev)
+            }
+            Err(_) => false,
+        });
+        incremental::save_snapshot(snapshot_path, &snapshot_new)?;
+    }
 
     if let Some(parent) = archive_path.parent() {
         fs::create_dir_all(parent)?;
