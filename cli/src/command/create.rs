@@ -239,6 +239,10 @@ fn create_archive(args: CreateCommand) -> anyhow::Result<()> {
         }
     };
     let archive_path = current_dir.join(archive);
+    let snapshot_abs = args
+        .listed_incremental
+        .as_ref()
+        .map(|p| current_dir.join(p));
     if let Some(working_dir) = args.working_dir {
         env::set_current_dir(working_dir)?;
     }
@@ -251,9 +255,9 @@ fn create_archive(args: CreateCommand) -> anyhow::Result<()> {
         exclude,
     )?;
 
-    let mut snapshot_new = incremental::Snapshot::default();
-    if let Some(ref snapshot_path) = args.listed_incremental {
+    if let Some(ref snapshot_path) = snapshot_abs {
         let snapshot_old = incremental::load_snapshot(snapshot_path)?;
+        let mut snapshot_new = snapshot_old.clone();
         target_items.retain(|item| match fs::metadata(item) {
             Ok(meta) => {
                 let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);

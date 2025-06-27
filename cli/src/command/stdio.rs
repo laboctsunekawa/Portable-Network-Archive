@@ -23,7 +23,7 @@ use crate::{
 };
 use clap::{ArgGroup, Args, Parser, ValueHint};
 use pna::Archive;
-use std::{fs, io, path::PathBuf, time::SystemTime};
+use std::{env, fs, io, path::PathBuf, time::SystemTime};
 
 #[derive(Args, Clone, Debug)]
 #[command(
@@ -259,6 +259,11 @@ fn run_create_archive(args: StdioCommand) -> anyhow::Result<()> {
             exclude: exclude.into(),
         }
     };
+    let snapshot_abs = if let Some(ref p) = args.listed_incremental {
+        Some(env::current_dir()?.join(p))
+    } else {
+        None
+    };
     let mut target_items = collect_items(
         &files,
         args.recursive,
@@ -268,9 +273,9 @@ fn run_create_archive(args: StdioCommand) -> anyhow::Result<()> {
         exclude,
     )?;
 
-    let mut snapshot_new = incremental::Snapshot::default();
-    if let Some(ref snapshot_path) = args.listed_incremental {
+    if let Some(ref snapshot_path) = snapshot_abs {
         let snapshot_old = incremental::load_snapshot(snapshot_path)?;
+        let mut snapshot_new = snapshot_old.clone();
         target_items.retain(|item| match fs::metadata(item) {
             Ok(meta) => {
                 let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);

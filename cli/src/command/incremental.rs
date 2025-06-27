@@ -6,7 +6,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Snapshot(pub HashMap<String, u64>);
 
 pub fn load_snapshot(path: &Path) -> io::Result<Snapshot> {
@@ -28,16 +28,30 @@ pub fn save_snapshot(path: &Path, snapshot: &Snapshot) -> io::Result<()> {
 }
 
 impl Snapshot {
+    fn normalize(path: &Path) -> String {
+        let s = path.to_string_lossy();
+        if path.is_absolute() {
+            s.into_owned()
+        } else if s == "." {
+            "./".to_string()
+        } else if s.starts_with("./") {
+            s.into_owned()
+        } else {
+            format!("./{}", s)
+        }
+    }
+
     pub fn get(&self, path: &Path) -> Option<SystemTime> {
+        let key = Self::normalize(path);
         self.0
-            .get(path.to_string_lossy().as_ref())
+            .get(&key)
             .map(|secs| SystemTime::UNIX_EPOCH + Duration::from_secs(*secs))
     }
 
     pub fn insert(&mut self, path: PathBuf, mtime: SystemTime) {
         if let Ok(duration) = mtime.duration_since(SystemTime::UNIX_EPOCH) {
-            self.0
-                .insert(path.to_string_lossy().into_owned(), duration.as_secs());
+            let key = Self::normalize(&path);
+            self.0.insert(key, duration.as_secs());
         }
     }
 }
