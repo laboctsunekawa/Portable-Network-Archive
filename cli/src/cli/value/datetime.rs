@@ -7,6 +7,7 @@ use std::{
 };
 
 #[derive(Debug, thiserror::Error)]
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum DateTimeError {
     #[error("Failed to parse seconds since unix epoch")]
     ParseError,
@@ -21,30 +22,45 @@ pub(crate) enum DateTime {
     Naive(chrono::NaiveDateTime),
     Zoned(chrono::DateTime<chrono::FixedOffset>),
     Date(chrono::NaiveDate),
-    Epoch(i64), // Unix epoch timestamp in seconds
+    /// Unix epoch timestamp represented as a signed [`Duration`].
+    Epoch {
+        /// `true` if the timestamp is before the Unix epoch.
+        negative: bool,
+        /// Absolute time difference from the Unix epoch.
+        duration: Duration,
+    },
 }
 
 impl DateTime {
     #[inline]
     pub(crate) fn to_system_time(&self) -> SystemTime {
-        fn from_timestamp(seconds: i64) -> SystemTime {
+        fn from_timestamp(seconds: i64, nanos: u32) -> SystemTime {
+            let duration = Duration::from_secs_f64(
+                seconds.unsigned_abs() as f64 + f64::from(nanos) / 1_000_000_000.0,
+            );
             if seconds < 0 {
-                UNIX_EPOCH.sub(Duration::from_secs(seconds.unsigned_abs()))
+                UNIX_EPOCH.sub(duration)
             } else {
-                UNIX_EPOCH.add(Duration::from_secs(seconds.unsigned_abs()))
+                UNIX_EPOCH.add(duration)
             }
         }
         match self {
             Self::Naive(naive) => {
                 // FIXME: Avoid `.unwrap()` call, use match statement with return Result.
-                let seconds = naive.and_local_timezone(chrono::Local).unwrap().timestamp();
-                from_timestamp(seconds)
+                let naive = naive.and_local_timezone(chrono::Local).unwrap();
+                from_timestamp(naive.timestamp(), naive.timestamp_subsec_nanos())
             }
-            Self::Zoned(zoned) => from_timestamp(zoned.timestamp()),
+            Self::Zoned(zoned) => from_timestamp(zoned.timestamp(), zoned.timestamp_subsec_nanos()),
             Self::Date(date) => {
-                from_timestamp(date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp())
+                from_timestamp(date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp(), 0)
             }
-            Self::Epoch(seconds) => from_timestamp(*seconds),
+            Self::Epoch { negative, duration } => {
+                if *negative {
+                    UNIX_EPOCH.sub(*duration)
+                } else {
+                    UNIX_EPOCH.add(*duration)
+                }
+            }
         }
     }
 }
@@ -56,7 +72,16 @@ impl Display for DateTime {
             Self::Naive(naive) => Display::fmt(naive, f),
             Self::Zoned(zoned) => Display::fmt(zoned, f),
             Self::Date(date) => Display::fmt(date, f),
-            Self::Epoch(seconds) => write!(f, "@{seconds}"),
+            Self::Epoch { negative, duration } => {
+                let sign = if *negative { "-" } else { "" };
+                let secs = duration.as_secs();
+                let nanos = duration.subsec_nanos();
+                if nanos == 0 {
+                    write!(f, "@{}{}", sign, secs)
+                } else {
+                    write!(f, "@{}{}.{:09}", sign, secs, nanos)
+                }
+            }
         }
     }
 }
@@ -73,8 +98,10 @@ impl FromStr for DateTime {
             } else {
                 Cow::Borrowed(seconds)
             };
-            let seconds = f64::from_str(&seconds_str).map_err(|_| DateTimeError::ParseError)?;
-            Ok(Self::Epoch(seconds.trunc() as i64))
+            let value = f64::from_str(&seconds_str).map_err(|_| DateTimeError::ParseError)?;
+            let negative = value.is_sign_negative();
+            let duration = Duration::from_secs_f64(value.abs());
+            Ok(Self::Epoch { negative, duration })
         } else if let Ok(naive) = chrono::NaiveDateTime::from_str(s) {
             Ok(Self::Naive(naive))
         } else if let Ok(naive_date) = chrono::NaiveDate::from_str(s) {
@@ -146,25 +173,25 @@ mod tests {
     #[test]
     fn test_relative_time_format_decimal_dot() {
         let datetime = DateTime::from_str("@123.456").unwrap();
-        assert_eq!(datetime.to_string(), "@123");
+        assert_eq!(datetime.to_string(), "@123.456000000");
     }
 
     #[test]
     fn test_relative_time_format_decimal_comma() {
         let datetime = DateTime::from_str("@123,456").unwrap();
-        assert_eq!(datetime.to_string(), "@123");
+        assert_eq!(datetime.to_string(), "@123.456000000");
     }
 
     #[test]
     fn test_relative_time_format_negative_decimal_dot() {
         let datetime = DateTime::from_str("@-123.456").unwrap();
-        assert_eq!(datetime.to_string(), "@-123");
+        assert_eq!(datetime.to_string(), "@-123.456000000");
     }
 
     #[test]
     fn test_relative_time_format_negative_decimal_comma() {
         let datetime = DateTime::from_str("@-123,456").unwrap();
-        assert_eq!(datetime.to_string(), "@-123");
+        assert_eq!(datetime.to_string(), "@-123.456000000");
     }
 
     #[test]
@@ -206,7 +233,17 @@ mod tests {
 
     #[test]
     fn test_to_system_time_epoch() {
-        let datetime = DateTime::Epoch(1234567890);
+        let datetime = DateTime::Epoch {
+            negative: false,
+            duration: Duration::from_secs(1_234_567_890),
+        };
+        let system_time = datetime.to_system_time();
+        assert!(system_time > UNIX_EPOCH);
+    }
+
+    #[test]
+    fn test_to_system_time_epoch_with_nanos() {
+        let datetime = DateTime::from_str("@1.5").unwrap();
         let system_time = datetime.to_system_time();
         assert!(system_time > UNIX_EPOCH);
     }
