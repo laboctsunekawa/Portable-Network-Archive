@@ -11,6 +11,7 @@ use crate::{
         },
         create::{create_archive_file, CreationContext},
         extract::{run_extract_archive_reader, OutputOption},
+        incremental,
         list::{ListOptions, TimeField, TimeFormat},
         Command,
     },
@@ -22,7 +23,7 @@ use crate::{
 };
 use clap::{ArgGroup, Args, Parser, ValueHint};
 use pna::Archive;
-use std::{fs, io, path::PathBuf, time::SystemTime};
+use std::{env, fs, io, path::PathBuf, time::SystemTime};
 
 #[derive(Args, Clone, Debug)]
 #[command(
@@ -101,6 +102,12 @@ pub(crate) struct StdioCommand {
     keep_acl: bool,
     #[arg(long, help = "Solid mode archive")]
     pub(crate) solid: bool,
+    #[arg(
+        long = "listed-incremental",
+        value_name = "FILE",
+        help = "Create incremental archive using snapshot file"
+    )]
+    pub(crate) listed_incremental: Option<PathBuf>,
     #[command(flatten)]
     pub(crate) compression: CompressionAlgorithmArgs,
     #[command(flatten)]
@@ -252,7 +259,12 @@ fn run_create_archive(args: StdioCommand) -> anyhow::Result<()> {
             exclude: exclude.into(),
         }
     };
-    let target_items = collect_items(
+    let snapshot_abs = if let Some(ref p) = args.listed_incremental {
+        Some(env::current_dir()?.join(p))
+    } else {
+        None
+    };
+    let mut target_items = collect_items(
         &files,
         args.recursive,
         args.keep_dir,
@@ -260,6 +272,20 @@ fn run_create_archive(args: StdioCommand) -> anyhow::Result<()> {
         args.follow_links,
         exclude,
     )?;
+
+    if let Some(ref snapshot_path) = snapshot_abs {
+        let snapshot_old = incremental::load_snapshot(snapshot_path)?;
+        let mut snapshot_new = snapshot_old.clone();
+        target_items.retain(|item| match fs::metadata(item) {
+            Ok(meta) => {
+                let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                snapshot_new.insert(item.clone(), mtime);
+                !matches!(snapshot_old.get(item), Some(prev) if mtime <= prev)
+            }
+            Err(_) => false,
+        });
+        incremental::save_snapshot(snapshot_path, &snapshot_new)?;
+    }
 
     let password = password.as_deref();
     let cli_option = entry_option(args.compression, args.cipher, args.hash, password);

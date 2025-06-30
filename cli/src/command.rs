@@ -11,6 +11,7 @@ pub mod create;
 mod delete;
 pub(super) mod experimental;
 pub mod extract;
+pub mod incremental;
 pub mod list;
 mod migrate;
 mod sort;
