@@ -29,6 +29,7 @@ use std::os::macos::fs::FileTimesExt;
 use std::os::windows::fs::FileTimesExt;
 use std::{
     borrow::Cow,
+    collections::HashSet,
     env, fs, io,
     path::{Component, PathBuf},
     time::Instant,
@@ -284,8 +285,14 @@ where
     Provider: FnMut() -> Option<&'p str> + Send,
 {
     let password = password_provider();
-    let globs =
-        GlobPatterns::new(files).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let matchers = files
+        .iter()
+        .map(|pat| Ok((pat.clone(), globset::Glob::new(pat)?.compile_matcher())))
+        .collect::<Result<Vec<_>, globset::Error>>()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let globs = GlobPatterns::new(files.clone())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let mut unmatched: HashSet<usize> = (0..matchers.len()).collect();
 
     let mut link_entries = Vec::new();
 
@@ -297,6 +304,11 @@ where
             if !globs.is_empty() && !globs.matches_any(&item_path) {
                 log::debug!("Skip: {}", item.header().path());
                 return Ok(());
+            }
+            for (i, (_, m)) in matchers.iter().enumerate() {
+                if unmatched.contains(&i) && m.is_match(&item_path) {
+                    unmatched.remove(&i);
+                }
             }
             if matches!(
                 item.header().data_kind(),
@@ -322,6 +334,16 @@ where
     for item in link_entries {
         extract_entry(item, password, &args)?;
     }
+    if !unmatched.is_empty() {
+        let names = unmatched
+            .into_iter()
+            .map(|i| matchers[i].0.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(
+            io::Error::new(io::ErrorKind::NotFound, format!("file {names} not found")).into(),
+        );
+    }
     Ok(())
 }
 
@@ -337,8 +359,13 @@ where
 {
     rayon::scope_fifo(|s| {
         let password = password_provider();
-        let globs =
-            GlobPatterns::new(files).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let matchers = files
+            .iter()
+            .map(|pat| Ok((pat.clone(), globset::Glob::new(pat)?.compile_matcher())))
+            .collect::<Result<Vec<_>, globset::Error>>()?;
+        let globs = GlobPatterns::new(files.clone())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let mut unmatched: HashSet<usize> = (0..matchers.len()).collect();
 
         let mut link_entries = Vec::<NormalEntry>::new();
 
@@ -350,6 +377,11 @@ where
             if !globs.is_empty() && !globs.matches_any(&item_path) {
                 log::debug!("Skip: {}", item.header().path());
                 return Ok(());
+            }
+            for (i, (_, m)) in matchers.iter().enumerate() {
+                if unmatched.contains(&i) && m.is_match(&item_path) {
+                    unmatched.remove(&i);
+                }
             }
             if matches!(
                 item.header().data_kind(),
@@ -373,6 +405,17 @@ where
 
         for item in link_entries {
             extract_entry(item, password, &args)?;
+        }
+        if !unmatched.is_empty() {
+            let names = unmatched
+                .into_iter()
+                .map(|i| matchers[i].0.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("file {names} not found"),
+            ));
         }
         Ok(())
     })
