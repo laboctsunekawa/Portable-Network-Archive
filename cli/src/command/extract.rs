@@ -284,8 +284,10 @@ where
     Provider: FnMut() -> Option<&'p str> + Send,
 {
     let password = password_provider();
-    let globs =
-        GlobPatterns::new(files).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let patterns = files;
+    let globs = GlobPatterns::new(patterns.clone())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let mut matched = vec![false; patterns.len()];
 
     let mut link_entries = Vec::new();
 
@@ -297,6 +299,13 @@ where
             if !globs.is_empty() && !globs.matches_any(&item_path) {
                 log::debug!("Skip: {}", item.header().path());
                 return Ok(());
+            }
+            let mut indices = Vec::new();
+            globs.matches_indices(&item_path, &mut indices);
+            for idx in indices {
+                if let Some(found) = matched.get_mut(idx) {
+                    *found = true;
+                }
             }
             if matches!(
                 item.header().data_kind(),
@@ -322,6 +331,18 @@ where
     for item in link_entries {
         extract_entry(item, password, &args)?;
     }
+    if let Some(p) = patterns
+        .iter()
+        .enumerate()
+        .find(|(i, _)| !matched[*i])
+        .map(|(_, p)| p)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{} not found in archive", p),
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -337,8 +358,10 @@ where
 {
     rayon::scope_fifo(|s| {
         let password = password_provider();
-        let globs =
-            GlobPatterns::new(files).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let patterns = files;
+        let globs = GlobPatterns::new(patterns.clone())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        let mut matched = vec![false; patterns.len()];
 
         let mut link_entries = Vec::<NormalEntry>::new();
 
@@ -350,6 +373,13 @@ where
             if !globs.is_empty() && !globs.matches_any(&item_path) {
                 log::debug!("Skip: {}", item.header().path());
                 return Ok(());
+            }
+            let mut indices = Vec::new();
+            globs.matches_indices(&item_path, &mut indices);
+            for idx in indices {
+                if let Some(found) = matched.get_mut(idx) {
+                    *found = true;
+                }
             }
             if matches!(
                 item.header().data_kind(),
@@ -374,7 +404,19 @@ where
         for item in link_entries {
             extract_entry(item, password, &args)?;
         }
-        Ok(())
+        if let Some(p) = patterns
+            .iter()
+            .enumerate()
+            .find(|(i, _)| !matched[*i])
+            .map(|(_, p)| p)
+        {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{} not found in archive", p),
+            ))
+        } else {
+            Ok(())
+        }
     })
 }
 

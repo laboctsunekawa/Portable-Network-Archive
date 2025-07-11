@@ -25,6 +25,11 @@ impl GlobPatterns {
     pub(crate) fn matches_any<P: AsRef<Path>>(&self, s: P) -> bool {
         self.0.is_match(s)
     }
+
+    #[inline]
+    pub(crate) fn matches_indices<P: AsRef<Path>>(&self, s: P, indices: &mut Vec<usize>) {
+        self.0.matches_into(s, indices);
+    }
 }
 
 impl TryFrom<Vec<globset::Glob>> for GlobPatterns {
