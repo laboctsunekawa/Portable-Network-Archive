@@ -96,6 +96,37 @@ For more commands and options:
 pna --help
 ```
 
+### Subcommands Overview
+
+| Command | Description |
+|---------|-------------|
+| `create` | Create archive (alias: `c`) |
+| `append` | Append files to an archive (alias: `a`) |
+| `extract` | Extract files from an archive (alias: `x`) |
+| `list` | List files in an archive (aliases: `l`, `ls`) |
+| `split` | Split archive into parts |
+| `concat` | Concatenate split archives |
+| `strip` | Strip metadata from archive entries |
+| `xattr` | Manipulate extended attributes |
+| `complete` | Generate shell completion scripts |
+| `bug-report` | Generate bug report template |
+| `experimental` | Experimental unstable commands |
+
+### Example Session
+
+```console
+$ pna create archive.pna myfile.txt
+Create an archive: archive.pna
+Successfully created an archive in 0 seconds
+
+$ pna list archive.pna
+myfile.txt
+
+$ pna extract archive.pna -C output_dir
+Extract archive archive.pna
+Successfully extracted an archive in 0 seconds
+```
+
 ## Specification
 
 Detailed information is available in the [Specification](https://portable-network-archive.github.io/Portable-Network-Archive-Specification/) document.
@@ -112,6 +143,15 @@ http://opensource.org/licenses/MIT)
 at your option.
 
 ### Contribution
+
+Contributions are welcome! Please open an issue or pull request on GitHub.
+Before submitting, make sure to run:
+
+```sh
+cargo fmt --all
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+```
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in this project by you, as defined in the Apache-2.0 license,
