@@ -224,6 +224,12 @@ pub(crate) struct UpdateCommand {
     pub(crate) gitignore: bool,
     #[arg(long, visible_aliases = ["dereference"], help = "Follow symbolic links")]
     follow_links: bool,
+    #[arg(
+        short = 'H',
+        long,
+        help = "Follow symbolic links named on the command line"
+    )]
+    follow_command_links: bool,
 }
 
 impl Command for UpdateCommand {
@@ -327,6 +333,7 @@ fn update_archive<Strategy: TransformStrategy>(args: UpdateCommand) -> anyhow::R
         args.keep_dir,
         args.gitignore,
         args.follow_links,
+        args.follow_command_links,
         exclude,
     )?;
 
@@ -338,7 +345,7 @@ fn update_archive<Strategy: TransformStrategy>(args: UpdateCommand) -> anyhow::R
 
     let mut target_files_mapping = target_items
         .into_iter()
-        .map(|(it, _)| (EntryName::from_lossy(&it), it))
+        .map(|(it, _, _)| (EntryName::from_lossy(&it), it))
         .collect::<IndexMap<_, _>>();
 
     #[cfg(feature = "memmap")]
@@ -364,7 +371,7 @@ fn update_archive<Strategy: TransformStrategy>(args: UpdateCommand) -> anyhow::R
                         let path_transformers = path_transformers.clone();
                         s.spawn_fifo(move |_| {
                             log::debug!("Updating: {}", target_path.display());
-                            let target_path = (target_path, None);
+                            let target_path = (target_path, None, false);
                             tx.send(create_entry(
                                 &target_path,
                                 &create_options,
@@ -389,7 +396,7 @@ fn update_archive<Strategy: TransformStrategy>(args: UpdateCommand) -> anyhow::R
             let path_transformers = path_transformers.clone();
             s.spawn_fifo(move |_| {
                 log::debug!("Adding: {}", file.display());
-                let file = (file, None);
+                let file = (file, None, false);
                 tx.send(create_entry(&file, &create_options, &path_transformers))
                     .unwrap_or_else(|e| panic!("{e}: {}", file.0.display()));
             });
