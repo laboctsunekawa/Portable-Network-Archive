@@ -16,13 +16,17 @@ pub(crate) fn normalize_utf8path(path: impl AsRef<Utf8Path>) -> Utf8PathBuf {
             Utf8Component::Prefix(_) => unreachable!(),
             Utf8Component::RootDir => buf.push(c),
             Utf8Component::CurDir => (),
-            Utf8Component::ParentDir => {
-                if buf.parent().is_some() {
+            Utf8Component::ParentDir => match buf.components().next_back() {
+                Some(Utf8Component::Normal(_)) => {
                     buf.pop();
-                } else {
+                }
+                Some(Utf8Component::ParentDir) | None => buf.push(c),
+                Some(Utf8Component::RootDir | Utf8Component::Prefix(_)) => {}
+                Some(Utf8Component::CurDir) => {
+                    buf.pop();
                     buf.push(c);
                 }
-            }
+            },
             Utf8Component::Normal(_) => buf.push(c),
         }
     }
@@ -41,5 +45,7 @@ mod tests {
         assert_eq!("a.txt", normalize_utf8path("./a.txt"));
         assert_eq!("a.txt", normalize_utf8path("a/../a.txt"));
         assert_eq!("../a.txt", normalize_utf8path("../a.txt"));
+        assert_eq!("../..", normalize_utf8path("../.."));
+        assert_eq!("../../a.txt", normalize_utf8path("../../a.txt"));
     }
 }
