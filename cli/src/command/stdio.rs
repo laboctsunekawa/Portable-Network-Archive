@@ -3,13 +3,13 @@ use crate::{
         CipherAlgorithmArgs, CompressionAlgorithmArgs, DateTime, HashAlgorithmArgs, PasswordArgs,
     },
     command::{
-        append::{open_archive_then_seek_to_end, run_append_archive},
+        append::open_archive_then_seek_to_end,
         ask_password, check_password,
         commons::{
-            collect_items, collect_split_archives, entry_option, read_paths, CreateOptions,
-            Exclude, KeepOptions, OwnerOptions, PathTransformers, TimeOptions,
+            collect_items, collect_split_archives, create_entry, entry_option, read_paths,
+            CreateOptions, Exclude, KeepOptions, OwnerOptions, PathTransformers, TimeOptions,
         },
-        create::{create_archive_file, CreationContext},
+        create::CreationContext,
         extract::{run_extract_archive_reader, OutputOption},
         list::{ListOptions, TimeField, TimeFormat},
         Command,
@@ -20,14 +20,15 @@ use crate::{
         GlobPatterns, VCS_FILES,
     },
 };
+use anyhow::{bail, Context};
 use clap::{ArgGroup, Args, ValueHint};
-use pna::Archive;
-use std::{env, io, path::PathBuf, time::SystemTime};
+use pna::{Archive, Entry, SolidArchive, WriteOptions};
+use std::{env, fs, io, path::PathBuf, time::SystemTime};
 
 #[derive(Args, Clone, Debug)]
 #[command(
     group(ArgGroup::new("unstable-acl").args(["keep_acl"]).requires("unstable")),
-    group(ArgGroup::new("bundled-flags").args(["create", "extract", "list"]).required(true)),
+    group(ArgGroup::new("bundled-flags").args(["create", "extract", "list", "append"]).required(true)),
     group(ArgGroup::new("unstable-include").args(["include"]).requires("unstable")),
     group(ArgGroup::new("unstable-exclude").args(["exclude"]).requires("unstable")),
     group(ArgGroup::new("unstable-exclude-from").args(["exclude_from"]).requires("unstable")),
@@ -297,16 +298,6 @@ fn run_create_archive(args: StdioCommand) -> anyhow::Result<()> {
     if let Some(working_dir) = args.working_dir {
         env::set_current_dir(working_dir)?;
     }
-    let target_items = collect_items(
-        &files,
-        !args.no_recursive,
-        args.keep_dir,
-        args.gitignore,
-        args.follow_links,
-        args.follow_command_links,
-        &exclude,
-    )?;
-
     let password = password.as_deref();
     let cli_option = entry_option(args.compression, args.cipher, args.hash, password);
     let keep_options = KeepOptions {
@@ -339,14 +330,38 @@ fn run_create_archive(args: StdioCommand) -> anyhow::Result<()> {
         solid: args.solid,
         path_transformers,
     };
+    let mut stdin_consumed = false;
     if let Some(file) = archive_file {
-        create_archive_file(
-            || utils::fs::file_create(&file, args.overwrite),
+        let writer = || utils::fs::file_create(&file, args.overwrite);
+        create_archive_with_sources(
+            writer,
             creation_context,
-            target_items,
+            files,
+            StdioInputOptions {
+                recursive: !args.no_recursive,
+                keep_dir: args.keep_dir,
+                gitignore: args.gitignore,
+                follow_links: args.follow_links,
+                follow_command_links: args.follow_command_links,
+                exclude,
+            },
+            &mut stdin_consumed,
         )
     } else {
-        create_archive_file(|| Ok(io::stdout().lock()), creation_context, target_items)
+        create_archive_with_sources(
+            || Ok(io::stdout().lock()),
+            creation_context,
+            files,
+            StdioInputOptions {
+                recursive: !args.no_recursive,
+                keep_dir: args.keep_dir,
+                gitignore: args.gitignore,
+                follow_links: args.follow_links,
+                follow_command_links: args.follow_command_links,
+                exclude,
+            },
+            &mut stdin_consumed,
+        )
     }
 }
 
@@ -533,40 +548,212 @@ fn run_append(args: StdioCommand) -> anyhow::Result<()> {
     if let Some(working_dir) = args.working_dir {
         env::set_current_dir(working_dir)?;
     }
+    let mut stdin_consumed = false;
     if let Some(file) = &archive_path {
-        let archive = open_archive_then_seek_to_end(file)?;
-        let target_items = collect_items(
-            &files,
-            args.recursive,
-            args.keep_dir,
-            args.gitignore,
-            args.follow_links,
-            args.follow_command_links,
-            &exclude,
-        )?;
-        run_append_archive(&create_options, &path_transformers, archive, target_items)
-    } else {
-        let target_items = collect_items(
-            &files,
-            args.recursive,
-            args.keep_dir,
-            args.gitignore,
-            args.follow_links,
-            args.follow_command_links,
-            &exclude,
-        )?;
-        let mut output_archive = Archive::write_header(io::stdout().lock())?;
-        {
-            let mut input_archive = Archive::read_header(io::stdin().lock())?;
-            for entry in input_archive.raw_entries() {
-                output_archive.add_entry(entry?)?;
-            }
-        }
-        run_append_archive(
+        let mut archive = open_archive_then_seek_to_end(file)?;
+        process_stdio_inputs(
+            &mut archive,
+            files,
             &create_options,
             &path_transformers,
-            output_archive,
-            target_items,
-        )
+            StdioInputOptions {
+                recursive: args.recursive,
+                keep_dir: args.keep_dir,
+                gitignore: args.gitignore,
+                follow_links: args.follow_links,
+                follow_command_links: args.follow_command_links,
+                exclude,
+            },
+            &mut stdin_consumed,
+        )?;
+        archive.finalize()?;
+        Ok(())
+    } else {
+        let mut output_archive = Archive::write_header(io::stdout().lock())?;
+        {
+            let mut input_archive = Archive::read_header(io::stdin().lock())
+                .context("failed to read PNA archive from standard input")?;
+            copy_archive_entries(&mut output_archive, &mut input_archive)?;
+            stdin_consumed = true;
+        }
+        process_stdio_inputs(
+            &mut output_archive,
+            files,
+            &create_options,
+            &path_transformers,
+            StdioInputOptions {
+                recursive: args.recursive,
+                keep_dir: args.keep_dir,
+                gitignore: args.gitignore,
+                follow_links: args.follow_links,
+                follow_command_links: args.follow_command_links,
+                exclude,
+            },
+            &mut stdin_consumed,
+        )?;
+        let _ = output_archive.finalize()?;
+        Ok(())
     }
+}
+
+struct StdioInputOptions {
+    recursive: bool,
+    keep_dir: bool,
+    gitignore: bool,
+    follow_links: bool,
+    follow_command_links: bool,
+    exclude: Exclude,
+}
+
+trait ArchiveWriteExt {
+    fn push_entry<T>(&mut self, entry: pna::NormalEntry<T>) -> io::Result<usize>
+    where
+        pna::NormalEntry<T>: Entry;
+}
+
+impl<W: io::Write> ArchiveWriteExt for Archive<W> {
+    #[inline]
+    fn push_entry<T>(&mut self, entry: pna::NormalEntry<T>) -> io::Result<usize>
+    where
+        pna::NormalEntry<T>: Entry,
+    {
+        self.add_entry(entry)
+    }
+}
+
+impl<W: io::Write> ArchiveWriteExt for SolidArchive<W> {
+    #[inline]
+    fn push_entry<T>(&mut self, entry: pna::NormalEntry<T>) -> io::Result<usize>
+    where
+        pna::NormalEntry<T>: Entry,
+    {
+        self.add_entry(entry)
+    }
+}
+
+fn create_archive_with_sources<W, F>(
+    mut get_writer: F,
+    CreationContext {
+        write_option,
+        keep_options,
+        owner_options,
+        time_options,
+        solid,
+        path_transformers,
+    }: CreationContext,
+    files: Vec<String>,
+    options: StdioInputOptions,
+    stdin_consumed: &mut bool,
+) -> anyhow::Result<()>
+where
+    W: io::Write,
+    F: FnMut() -> io::Result<W> + Send,
+{
+    let file = get_writer()?;
+    if solid {
+        let mut writer = Archive::write_solid_header(file, write_option.clone())?;
+        let create_options = CreateOptions {
+            option: WriteOptions::store(),
+            keep_options,
+            owner_options,
+            time_options,
+        };
+        process_stdio_inputs(
+            &mut writer,
+            files,
+            &create_options,
+            &path_transformers,
+            options,
+            stdin_consumed,
+        )?;
+        writer.finalize()?;
+    } else {
+        let mut writer = Archive::write_header(file)?;
+        let create_options = CreateOptions {
+            option: write_option,
+            keep_options,
+            owner_options,
+            time_options,
+        };
+        process_stdio_inputs(
+            &mut writer,
+            files,
+            &create_options,
+            &path_transformers,
+            options,
+            stdin_consumed,
+        )?;
+        writer.finalize()?;
+    }
+    Ok(())
+}
+
+fn process_stdio_inputs<W: ArchiveWriteExt>(
+    writer: &mut W,
+    files: Vec<String>,
+    create_options: &CreateOptions,
+    path_transformers: &Option<PathTransformers>,
+    options: StdioInputOptions,
+    stdin_consumed: &mut bool,
+) -> anyhow::Result<()> {
+    for item in files {
+        if let Some(spec) = item.strip_prefix('@') {
+            import_archive(writer, spec, stdin_consumed)
+                .with_context(|| format!("failed to import archive '{item}'"))?;
+            continue;
+        }
+
+        let entries = collect_items(
+            std::iter::once(PathBuf::from(&item)),
+            options.recursive,
+            options.keep_dir,
+            options.gitignore,
+            options.follow_links,
+            options.follow_command_links,
+            &options.exclude,
+        )?;
+        for entry in entries {
+            let built_entry = create_entry(&entry, create_options, path_transformers)
+                .with_context(|| format!("failed to archive {}", entry.0.display()))?;
+            writer.push_entry(built_entry)?;
+        }
+    }
+    Ok(())
+}
+
+fn import_archive<W: ArchiveWriteExt>(
+    writer: &mut W,
+    spec: &str,
+    stdin_consumed: &mut bool,
+) -> anyhow::Result<()> {
+    if spec.is_empty() {
+        bail!("missing archive path after '@'");
+    }
+    if spec == "-" {
+        if *stdin_consumed {
+            bail!("standard input has already been consumed");
+        }
+        let stdin = io::stdin();
+        let mut archive = Archive::read_header(stdin.lock())
+            .context("failed to read PNA archive from standard input")?;
+        copy_archive_entries(writer, &mut archive)?;
+        *stdin_consumed = true;
+        return Ok(());
+    }
+
+    let file = fs::File::open(spec).with_context(|| format!("failed to open archive '{spec}'"))?;
+    let mut reader = Archive::read_header(file)
+        .with_context(|| format!("'{}' is not a valid PNA archive", spec))?;
+    copy_archive_entries(writer, &mut reader)?;
+    Ok(())
+}
+
+fn copy_archive_entries<W: ArchiveWriteExt, R: io::Read>(
+    writer: &mut W,
+    reader: &mut Archive<R>,
+) -> anyhow::Result<()> {
+    for entry in reader.entries().extract_solid_entries(None) {
+        writer.push_entry(entry?)?;
+    }
+    Ok(())
 }
