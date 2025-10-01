@@ -1009,7 +1009,15 @@ impl Exclude {
     #[inline]
     pub(crate) fn excluded(&self, s: impl AsRef<str>) -> bool {
         let s = s.as_ref();
-        !self.include.matches_inclusion(s) && self.exclude.matches_exclusion(s)
+        if self.exclude.matches_exclusion(s) {
+            return true;
+        }
+
+        if self.include.is_empty() {
+            return false;
+        }
+
+        !self.include.matches_inclusion(s)
     }
 }
 
@@ -1066,18 +1074,18 @@ mod tests {
     }
 
     #[test]
-    fn exclude_include() {
+    fn exclude_include_precedence() {
         let exclude = Exclude {
             include: vec!["a/*/c"].into(),
             exclude: vec!["a/*"].into(),
         };
-        assert!(!exclude.excluded("a/b/c"));
+        assert!(exclude.excluded("a/b/c"));
 
         let exclude = Exclude {
             include: vec!["a/*/c"].into(),
             exclude: vec!["a/*/c"].into(),
         };
-        assert!(!exclude.excluded("a/b/c"));
+        assert!(exclude.excluded("a/b/c"));
     }
 
     #[test]

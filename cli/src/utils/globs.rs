@@ -78,6 +78,11 @@ impl BsdGlobPatterns {
     }
 
     #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[inline]
     pub fn matches_exclusion(&self, s: impl AsRef<str>) -> bool {
         self.0.iter().any(|it| it.match_exclusion(s.as_ref()))
     }
