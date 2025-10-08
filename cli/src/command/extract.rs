@@ -30,7 +30,7 @@ use std::os::windows::fs::FileTimesExt;
 use std::{
     borrow::Cow,
     env, fs, io,
-    path::{Component, PathBuf},
+    path::{Component, Path, PathBuf},
     time::Instant,
 };
 
@@ -53,8 +53,24 @@ use std::{
     group(ArgGroup::new("windows-unstable-keep-permission").args(["keep_permission"]).requires("unstable")),
 ))]
 pub(crate) struct ExtractCommand {
-    #[arg(long, help = "Overwrite file")]
+    #[arg(
+        long,
+        help = "Overwrite file",
+        conflicts_with_all = ["keep_newer", "keep_older"]
+    )]
     pub(crate) overwrite: bool,
+    #[arg(
+        long,
+        help = "Skip extracting files if a newer version already exists",
+        conflicts_with_all = ["overwrite", "keep_older"]
+    )]
+    pub(crate) keep_newer: bool,
+    #[arg(
+        long,
+        help = "Skip extracting files if they already exist",
+        conflicts_with_all = ["overwrite", "keep_newer"]
+    )]
+    pub(crate) keep_older: bool,
     #[arg(long, help = "Output directory of extracted files", value_hint = ValueHint::DirPath)]
     pub(crate) out_dir: Option<PathBuf>,
     #[command(flatten)]
@@ -194,6 +210,8 @@ fn extract_archive(args: ExtractCommand) -> anyhow::Result<()> {
         }
     };
 
+    let overwrite_strategy =
+        OverwriteStrategy::from_flags(args.overwrite, args.keep_newer, args.keep_older);
     let keep_options = KeepOptions {
         keep_timestamp: args.keep_timestamp,
         keep_permission: args.keep_permission,
@@ -208,7 +226,7 @@ fn extract_archive(args: ExtractCommand) -> anyhow::Result<()> {
         args.numeric_owner,
     );
     let output_options = OutputOption {
-        overwrite: args.overwrite,
+        overwrite_strategy,
         allow_unsafe_links: args.allow_unsafe_links,
         strip_components: args.strip_components,
         out_dir: args.out_dir,
@@ -262,9 +280,31 @@ fn extract_archive(args: ExtractCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OverwriteStrategy {
+    Never,
+    Always,
+    KeepNewer,
+    KeepOlder,
+}
+
+impl OverwriteStrategy {
+    pub(crate) const fn from_flags(overwrite: bool, keep_newer: bool, keep_older: bool) -> Self {
+        if overwrite {
+            Self::Always
+        } else if keep_newer {
+            Self::KeepNewer
+        } else if keep_older {
+            Self::KeepOlder
+        } else {
+            Self::Never
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct OutputOption {
-    pub(crate) overwrite: bool,
+    pub(crate) overwrite_strategy: OverwriteStrategy,
     pub(crate) allow_unsafe_links: bool,
     pub(crate) strip_components: Option<usize>,
     pub(crate) out_dir: Option<PathBuf>,
@@ -385,7 +425,7 @@ pub(crate) fn extract_entry<T>(
     item: NormalEntry<T>,
     password: Option<&str>,
     OutputOption {
-        overwrite,
+        overwrite_strategy,
         allow_unsafe_links,
         strip_components,
         out_dir,
@@ -401,7 +441,7 @@ where
     pna::RawChunk<T>: Chunk,
 {
     let same_owner = *same_owner;
-    let overwrite = *overwrite;
+    let overwrite_strategy = *overwrite_strategy;
     let item_path = item.header().path().as_str();
     if filter.excluded(item_path) {
         return Ok(());
@@ -430,12 +470,6 @@ where
     } else {
         item_path
     };
-    if path.exists() && !overwrite {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("{} already exists", path.display()),
-        ));
-    }
     log::debug!("start: {}", path.display());
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -449,7 +483,29 @@ where
     };
     match item.header().data_kind() {
         DataKind::File => {
-            let mut file = utils::fs::file_create(&path, overwrite)?;
+            if path.exists() {
+                match overwrite_strategy {
+                    OverwriteStrategy::Always => {}
+                    OverwriteStrategy::Never => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            format!("{} already exists", path.display()),
+                        ));
+                    }
+                    OverwriteStrategy::KeepOlder => {
+                        log_skip(&path, "existing file kept by --keep-older");
+                        return Ok(());
+                    }
+                    OverwriteStrategy::KeepNewer => {
+                        let metadata = fs::metadata(&path)?;
+                        if is_existing_newer(&metadata, &item) {
+                            log_skip(&path, "newer file already exists (--keep-newer)");
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            let mut file = utils::fs::file_create(&path, true)?;
             if keep_options.keep_timestamp {
                 let mut times = fs::FileTimes::new();
                 if let Some(accessed) = item.metadata().accessed_time() {
@@ -471,6 +527,32 @@ where
             fs::create_dir_all(&path)?;
         }
         DataKind::SymbolicLink => {
+            let mut remove_existing = false;
+            if fs::symlink_metadata(&path).is_ok() {
+                match overwrite_strategy {
+                    OverwriteStrategy::Always => {
+                        remove_existing = true;
+                    }
+                    OverwriteStrategy::Never => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            format!("{} already exists", path.display()),
+                        ));
+                    }
+                    OverwriteStrategy::KeepOlder => {
+                        log_skip(&path, "existing link kept by --keep-older");
+                        return Ok(());
+                    }
+                    OverwriteStrategy::KeepNewer => {
+                        let metadata = fs::symlink_metadata(&path)?;
+                        if is_existing_newer(&metadata, &item) {
+                            log_skip(&path, "newer link already exists (--keep-newer)");
+                            return Ok(());
+                        }
+                        remove_existing = true;
+                    }
+                }
+            }
             let reader = item.reader(ReadOptions::with_password(password))?;
             let original = io::read_to_string(reader)?;
             let original = if let Some(substitutions) = path_transformers {
@@ -483,12 +565,38 @@ where
                 log::warn!("Skipped extracting a symbolic link that contains an unsafe link. If you need to extract it, use `--allow-unsafe-links`.");
                 return Ok(());
             }
-            if overwrite && fs::symlink_metadata(&path).is_ok() {
+            if remove_existing {
                 utils::fs::remove_path_all(&path)?;
             }
             utils::fs::symlink(original, &path)?;
         }
         DataKind::HardLink => {
+            let mut remove_existing = false;
+            if path.exists() {
+                match overwrite_strategy {
+                    OverwriteStrategy::Always => {
+                        remove_existing = true;
+                    }
+                    OverwriteStrategy::Never => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            format!("{} already exists", path.display()),
+                        ));
+                    }
+                    OverwriteStrategy::KeepOlder => {
+                        log_skip(&path, "existing link kept by --keep-older");
+                        return Ok(());
+                    }
+                    OverwriteStrategy::KeepNewer => {
+                        let metadata = fs::metadata(&path)?;
+                        if is_existing_newer(&metadata, &item) {
+                            log_skip(&path, "newer link already exists (--keep-newer)");
+                            return Ok(());
+                        }
+                        remove_existing = true;
+                    }
+                }
+            }
             let reader = item.reader(ReadOptions::with_password(password))?;
             let original = io::read_to_string(reader)?;
             let original = if let Some(substitutions) = path_transformers {
@@ -505,7 +613,7 @@ where
             if let Some(parent) = path.parent() {
                 original = Cow::from(parent.join(original));
             }
-            if overwrite && path.exists() {
+            if remove_existing {
                 utils::fs::remove_path_all(&path)?;
             }
             fs::hard_link(original, &path)?;
@@ -587,6 +695,23 @@ where
     }
     log::debug!("end: {}", path.display());
     Ok(())
+}
+
+fn log_skip(path: &Path, reason: &str) {
+    log::info!("Skipped extracting {}: {}", path.display(), reason);
+}
+
+fn is_existing_newer<T>(metadata: &fs::Metadata, item: &NormalEntry<T>) -> bool
+where
+    T: AsRef<[u8]>,
+{
+    if let (Ok(existing_modified), Some(entry_modified)) =
+        (metadata.modified(), item.metadata().modified_time())
+    {
+        existing_modified >= entry_modified
+    } else {
+        false
+    }
 }
 
 fn permissions<'p>(

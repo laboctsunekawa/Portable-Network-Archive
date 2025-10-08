@@ -2,6 +2,7 @@ mod chroot;
 mod exclude;
 mod exclude_vcs;
 mod hardlink;
+mod keep_strategy;
 mod missing_file;
 mod overwrite_symlink;
 mod password_from_file;

@@ -10,7 +10,7 @@ use crate::{
             KeepOptions, OwnerOptions, PathFilter, PathTransformers, TimeOptions,
         },
         create::{create_archive_file, CreationContext},
-        extract::{run_extract_archive_reader, OutputOption},
+        extract::{run_extract_archive_reader, OutputOption, OverwriteStrategy},
         list::{ListOptions, TimeField, TimeFormat},
         Command,
     },
@@ -85,8 +85,24 @@ pub(crate) struct StdioCommand {
         help = "Do not recursively add directories to the archives. This is the inverse option of --recursive"
     )]
     no_recursive: bool,
-    #[arg(long, help = "Overwrite file")]
+    #[arg(
+        long,
+        help = "Overwrite file",
+        conflicts_with_all = ["keep_newer", "keep_older"]
+    )]
     overwrite: bool,
+    #[arg(
+        long,
+        help = "Skip extracting files if a newer version already exists",
+        conflicts_with_all = ["overwrite", "keep_older"]
+    )]
+    keep_newer: bool,
+    #[arg(
+        long,
+        help = "Skip extracting files if they already exist",
+        conflicts_with_all = ["overwrite", "keep_newer"]
+    )]
+    keep_older: bool,
     #[arg(long, help = "Archiving the directories")]
     keep_dir: bool,
     #[arg(
@@ -379,7 +395,11 @@ fn run_extract_archive(args: StdioCommand) -> anyhow::Result<()> {
     };
 
     let out_option = OutputOption {
-        overwrite: args.overwrite,
+        overwrite_strategy: OverwriteStrategy::from_flags(
+            args.overwrite,
+            args.keep_newer,
+            args.keep_older,
+        ),
         allow_unsafe_links: args.allow_unsafe_links,
         strip_components: args.strip_components,
         out_dir: args.out_dir,
