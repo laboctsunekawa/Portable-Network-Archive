@@ -11,6 +11,7 @@ pub(crate) mod os;
 mod path;
 pub(crate) mod re;
 pub(crate) mod str;
+pub(crate) mod sync;
 
 pub(crate) use {globs::*, path::*};
 

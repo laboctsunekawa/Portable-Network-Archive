@@ -17,6 +17,7 @@ use crate::{
         fmt::DurationDisplay,
         fs::{Group, User},
         re::{bsd::SubstitutionRule, gnu::TransformRule},
+        sync::with_path_lock,
         GlobPatterns, VCS_FILES,
     },
 };
@@ -426,167 +427,175 @@ where
         item_path
     };
     let path = if let Some(out_dir) = out_dir {
-        Cow::from(out_dir.join(item_path))
+        Cow::from(out_dir.join(item_path.as_ref()))
     } else {
         item_path
     };
-    if path.exists() && !overwrite {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("{} already exists", path.display()),
-        ));
-    }
-    log::debug!("start: {}", path.display());
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let permissions = if keep_options.keep_permission {
-        item.metadata()
-            .permission()
-            .and_then(|p| permissions(p, owner_options))
-    } else {
-        None
+    let path = match path {
+        Cow::Borrowed(p) => p.to_path_buf(),
+        Cow::Owned(p) => p,
     };
-    match item.header().data_kind() {
-        DataKind::File => {
-            let mut file = utils::fs::file_create(&path, overwrite)?;
-            if keep_options.keep_timestamp {
-                let mut times = fs::FileTimes::new();
-                if let Some(accessed) = item.metadata().accessed_time() {
-                    times = times.set_accessed(accessed);
-                }
-                if let Some(modified) = item.metadata().modified_time() {
-                    times = times.set_modified(modified);
-                }
-                #[cfg(any(windows, target_os = "macos"))]
-                if let Some(created) = item.metadata().created_time() {
-                    times = times.set_created(created);
-                }
-                file.set_times(times)?;
-            }
-            let mut reader = item.reader(ReadOptions::with_password(password))?;
-            io::copy(&mut reader, &mut file)?;
-        }
-        DataKind::Directory => {
-            fs::create_dir_all(&path)?;
-        }
-        DataKind::SymbolicLink => {
-            let reader = item.reader(ReadOptions::with_password(password))?;
-            let original = io::read_to_string(reader)?;
-            let original = if let Some(substitutions) = path_transformers {
-                substitutions.apply(original, true, false)
-            } else {
-                original
-            };
-            let original = EntryReference::from_lossy(original);
-            if !allow_unsafe_links && is_unsafe_link(&original) {
-                log::warn!("Skipped extracting a symbolic link that contains an unsafe link. If you need to extract it, use `--allow-unsafe-links`.");
-                return Ok(());
-            }
-            if overwrite && fs::symlink_metadata(&path).is_ok() {
-                utils::fs::remove_path_all(&path)?;
-            }
-            utils::fs::symlink(original, &path)?;
-        }
-        DataKind::HardLink => {
-            let reader = item.reader(ReadOptions::with_password(password))?;
-            let original = io::read_to_string(reader)?;
-            let original = if let Some(substitutions) = path_transformers {
-                substitutions.apply(original, true, false)
-            } else {
-                original
-            };
-            let original = EntryReference::from_lossy(original);
-            if !allow_unsafe_links && is_unsafe_link(&original) {
-                log::warn!("Skipped extracting a hard link that contains an unsafe link. If you need to extract it, use `--allow-unsafe-links`.");
-                return Ok(());
-            }
-            let mut original = Cow::from(original.as_path());
-            if let Some(parent) = path.parent() {
-                original = Cow::from(parent.join(original));
-            }
-            if overwrite && path.exists() {
-                utils::fs::remove_path_all(&path)?;
-            }
-            fs::hard_link(original, &path)?;
-        }
-    }
-    #[cfg(unix)]
-    if let Some((p, u, g)) = permissions {
-        use std::os::unix::fs::PermissionsExt;
-        if same_owner {
-            match chown(&path, u, g) {
-                Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-                    log::warn!("failed to restore owner of {}: {}", path.display(), e)
-                }
-                r => r?,
-            }
-        }
-        fs::set_permissions(&path, fs::Permissions::from_mode(p.permissions().into()))?;
-    };
-    #[cfg(windows)]
-    if let Some((p, u, g)) = permissions {
-        if same_owner {
-            chown(&path, u, g)?;
-        }
-        utils::os::windows::fs::chmod(&path, p.permissions())?;
-    }
-    #[cfg(not(any(unix, windows)))]
-    if let Some(_) = permissions {
-        log::warn!("Currently permission is not supported on this platform.");
-    }
-    #[cfg(unix)]
-    if keep_options.keep_xattr {
-        utils::os::unix::fs::xattrs::set_xattrs(&path, item.xattrs())?;
-    }
-    #[cfg(not(unix))]
-    if keep_options.keep_xattr {
-        log::warn!("Currently extended attribute is not supported on this platform.");
-    }
-    #[cfg(feature = "acl")]
-    {
-        #[cfg(any(
-            target_os = "linux",
-            target_os = "freebsd",
-            target_os = "macos",
-            windows
-        ))]
-        if keep_options.keep_acl {
-            use crate::chunk::{acl_convert_current_platform, AcePlatform, Acl};
-            use crate::ext::*;
-            use itertools::Itertools;
 
-            let platform = AcePlatform::CURRENT;
-            let acls = item.acl()?;
-            if let Some((platform, acl)) = acls.into_iter().find_or_first(|(p, _)| p.eq(&platform))
-            {
-                if !acl.is_empty() {
-                    utils::acl::set_facl(
-                        &path,
-                        acl_convert_current_platform(Acl {
-                            platform,
-                            entries: acl,
-                        }),
-                    )?;
+    with_path_lock(path.as_path(), || -> io::Result<()> {
+        if path.exists() && !overwrite {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} already exists", path.display()),
+            ));
+        }
+        log::debug!("start: {}", path.display());
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let permissions = if keep_options.keep_permission {
+            item.metadata()
+                .permission()
+                .and_then(|p| permissions(p, owner_options))
+        } else {
+            None
+        };
+        match item.header().data_kind() {
+            DataKind::File => {
+                let mut file = utils::fs::file_create(&path, overwrite)?;
+                if keep_options.keep_timestamp {
+                    let mut times = fs::FileTimes::new();
+                    if let Some(accessed) = item.metadata().accessed_time() {
+                        times = times.set_accessed(accessed);
+                    }
+                    if let Some(modified) = item.metadata().modified_time() {
+                        times = times.set_modified(modified);
+                    }
+                    #[cfg(any(windows, target_os = "macos"))]
+                    if let Some(created) = item.metadata().created_time() {
+                        times = times.set_created(created);
+                    }
+                    file.set_times(times)?;
                 }
+                let mut reader = item.reader(ReadOptions::with_password(password))?;
+                io::copy(&mut reader, &mut file)?;
+            }
+            DataKind::Directory => {
+                fs::create_dir_all(&path)?;
+            }
+            DataKind::SymbolicLink => {
+                let reader = item.reader(ReadOptions::with_password(password))?;
+                let original = io::read_to_string(reader)?;
+                let original = if let Some(substitutions) = path_transformers {
+                    substitutions.apply(original, true, false)
+                } else {
+                    original
+                };
+                let original = EntryReference::from_lossy(original);
+                if !allow_unsafe_links && is_unsafe_link(&original) {
+                    log::warn!("Skipped extracting a symbolic link that contains an unsafe link. If you need to extract it, use `--allow-unsafe-links`.");
+                    return Ok(());
+                }
+                if overwrite && fs::symlink_metadata(&path).is_ok() {
+                    utils::fs::remove_path_all(&path)?;
+                }
+                utils::fs::symlink(original, &path)?;
+            }
+            DataKind::HardLink => {
+                let reader = item.reader(ReadOptions::with_password(password))?;
+                let original = io::read_to_string(reader)?;
+                let original = if let Some(substitutions) = path_transformers {
+                    substitutions.apply(original, true, false)
+                } else {
+                    original
+                };
+                let original = EntryReference::from_lossy(original);
+                if !allow_unsafe_links && is_unsafe_link(&original) {
+                    log::warn!("Skipped extracting a hard link that contains an unsafe link. If you need to extract it, use `--allow-unsafe-links`.");
+                    return Ok(());
+                }
+                let mut original = Cow::from(original.as_path());
+                if let Some(parent) = path.parent() {
+                    original = Cow::from(parent.join(original));
+                }
+                if overwrite && path.exists() {
+                    utils::fs::remove_path_all(&path)?;
+                }
+                fs::hard_link(original, &path)?;
             }
         }
-        #[cfg(not(any(
-            target_os = "linux",
-            target_os = "freebsd",
-            target_os = "macos",
-            windows
-        )))]
-        if keep_options.keep_acl {
-            log::warn!("Currently acl is not supported on this platform.");
+        #[cfg(unix)]
+        if let Some((p, u, g)) = permissions {
+            use std::os::unix::fs::PermissionsExt;
+            if same_owner {
+                match chown(&path, u, g) {
+                    Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                        log::warn!("failed to restore owner of {}: {}", path.display(), e)
+                    }
+                    r => r?,
+                }
+            }
+            fs::set_permissions(&path, fs::Permissions::from_mode(p.permissions().into()))?;
+        };
+        #[cfg(windows)]
+        if let Some((p, u, g)) = permissions {
+            if same_owner {
+                chown(&path, u, g)?;
+            }
+            utils::os::windows::fs::chmod(&path, p.permissions())?;
         }
-    }
-    #[cfg(not(feature = "acl"))]
-    if keep_options.keep_acl {
-        log::warn!("Please enable `acl` feature and rebuild and install pna.");
-    }
-    log::debug!("end: {}", path.display());
-    Ok(())
+        #[cfg(not(any(unix, windows)))]
+        if let Some(_) = permissions {
+            log::warn!("Currently permission is not supported on this platform.");
+        }
+        #[cfg(unix)]
+        if keep_options.keep_xattr {
+            utils::os::unix::fs::xattrs::set_xattrs(&path, item.xattrs())?;
+        }
+        #[cfg(not(unix))]
+        if keep_options.keep_xattr {
+            log::warn!("Currently extended attribute is not supported on this platform.");
+        }
+        #[cfg(feature = "acl")]
+        {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "freebsd",
+                target_os = "macos",
+                windows
+            ))]
+            if keep_options.keep_acl {
+                use crate::chunk::{acl_convert_current_platform, AcePlatform, Acl};
+                use crate::ext::*;
+                use itertools::Itertools;
+
+                let platform = AcePlatform::CURRENT;
+                let acls = item.acl()?;
+                if let Some((platform, acl)) =
+                    acls.into_iter().find_or_first(|(p, _)| p.eq(&platform))
+                {
+                    if !acl.is_empty() {
+                        utils::acl::set_facl(
+                            &path,
+                            acl_convert_current_platform(Acl {
+                                platform,
+                                entries: acl,
+                            }),
+                        )?;
+                    }
+                }
+            }
+            #[cfg(not(any(
+                target_os = "linux",
+                target_os = "freebsd",
+                target_os = "macos",
+                windows
+            )))]
+            if keep_options.keep_acl {
+                log::warn!("Currently acl is not supported on this platform.");
+            }
+        }
+        #[cfg(not(feature = "acl"))]
+        if keep_options.keep_acl {
+            log::warn!("Please enable `acl` feature and rebuild and install pna.");
+        }
+        log::debug!("end: {}", path.display());
+        Ok(())
+    })
 }
 
 fn permissions<'p>(
