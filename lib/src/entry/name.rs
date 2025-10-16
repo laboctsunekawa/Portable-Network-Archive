@@ -47,6 +47,19 @@ impl EntryName {
         Ok(Self::new_from_utf8path(Utf8Path::new(name)))
     }
 
+    fn new_from_utf8path_full(path: &Utf8Path) -> Self {
+        Self(Self::sanitize_utf8_full_path(path))
+    }
+
+    fn new_from_path_full(path: &Path) -> Result<Self, EntryNameError> {
+        let path = str::from_utf8(path.as_os_str().as_encoded_bytes())?;
+        Ok(Self::new_from_utf8path_full(Utf8Path::new(path)))
+    }
+
+    fn from_path_full_lossy(path: &Path) -> Self {
+        Self(Self::sanitize_path_full_lossy(path))
+    }
+
     /// Creates an [`EntryName`] from a struct impl <code>[Into]<[PathBuf]></code>.
     ///
     /// Any non-Unicode sequences are replaced with
@@ -69,6 +82,66 @@ impl EntryName {
         Self::from_path_lossy(&p.into())
     }
 
+    /// Creates an [`EntryName`] while preserving absolute or parent components.
+    ///
+    /// This behaves similar to the default constructors but keeps components
+    /// such as the root directory or path prefixes. Path separators are still
+    /// normalized to `/` and redundant segments are collapsed.
+    ///
+    /// # Examples
+    /// ```rust
+    /// use libpna::EntryName;
+    ///
+    /// assert_eq!("/etc/passwd", EntryName::from_full_path("/etc/passwd"));
+    /// assert_eq!("../var/log", EntryName::from_full_path("../var/log"));
+    /// ```
+    #[inline]
+    pub fn from_full_path(name: &str) -> Self {
+        Self::new_from_utf8path_full(Utf8Path::new(name))
+    }
+
+    /// Creates an [`EntryName`] from an arbitrary path while preserving
+    /// absolute or parent components.
+    #[inline]
+    pub fn from_full_path_lossy<T: Into<PathBuf>>(path: T) -> Self {
+        Self::from_path_full_lossy(&path.into())
+    }
+
+    /// Attempts to create an [`EntryName`] from a path while preserving
+    /// absolute or parent components.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provided path contains invalid UTF-8
+    /// sequences.
+    #[inline]
+    pub fn try_from_full_path(path: &Path) -> Result<Self, EntryNameError> {
+        Self::new_from_path_full(path)
+    }
+
+    /// Sanitizes a path string while preserving absolute or parent components.
+    #[inline]
+    pub fn sanitize_full_path(path: &str) -> String {
+        Self::sanitize_utf8_full_path(Utf8Path::new(path))
+    }
+
+    /// Sanitizes a path while preserving absolute or parent components.
+    #[inline]
+    pub fn sanitize_full_path_lossy<T: Into<PathBuf>>(path: T) -> String {
+        Self::sanitize_path_full_lossy(&path.into())
+    }
+
+    /// Attempts to sanitize a path while preserving absolute or parent components.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provided path contains invalid UTF-8
+    /// sequences.
+    #[inline]
+    pub fn try_sanitize_full_path(path: &Path) -> Result<String, EntryNameError> {
+        Self::try_sanitize_path_full(path)
+    }
+
     fn from_path_lossy(p: &Path) -> Self {
         let p = normalize_path(p);
         let iter = p.components().filter_map(|c| match c {
@@ -84,6 +157,105 @@ impl EntryName {
     #[inline]
     pub(crate) fn as_bytes(&self) -> &[u8] {
         self.0.as_bytes()
+    }
+
+    fn sanitize_utf8_full_path(path: &Utf8Path) -> String {
+        let path = normalize_utf8path(path);
+        let mut buf = String::with_capacity(path.as_str().len());
+        let mut needs_separator = false;
+
+        for component in path.components() {
+            match component {
+                Utf8Component::Prefix(prefix) => {
+                    if needs_separator {
+                        buf.push('/');
+                    }
+                    buf.push_str(prefix.as_str());
+                    needs_separator = !buf.ends_with('/');
+                }
+                Utf8Component::RootDir => {
+                    if !buf.ends_with('/') {
+                        buf.push('/');
+                    }
+                    needs_separator = false;
+                }
+                Utf8Component::CurDir => {
+                    if needs_separator {
+                        buf.push('/');
+                    }
+                    buf.push('.');
+                    needs_separator = true;
+                }
+                Utf8Component::ParentDir => {
+                    if needs_separator {
+                        buf.push('/');
+                    }
+                    buf.push_str("..");
+                    needs_separator = true;
+                }
+                Utf8Component::Normal(part) => {
+                    if needs_separator {
+                        buf.push('/');
+                    }
+                    buf.push_str(part);
+                    needs_separator = true;
+                }
+            }
+        }
+
+        buf
+    }
+
+    fn sanitize_path_full_lossy(path: &Path) -> String {
+        let path = normalize_path(path);
+        let mut buf = String::with_capacity(path.as_os_str().len());
+        let mut needs_separator = false;
+
+        for component in path.components() {
+            match component {
+                Component::Prefix(prefix) => {
+                    if needs_separator {
+                        buf.push('/');
+                    }
+                    buf.push_str(&prefix.as_os_str().to_string_lossy());
+                    needs_separator = !buf.ends_with('/');
+                }
+                Component::RootDir => {
+                    if !buf.ends_with('/') {
+                        buf.push('/');
+                    }
+                    needs_separator = false;
+                }
+                Component::CurDir => {
+                    if needs_separator {
+                        buf.push('/');
+                    }
+                    buf.push('.');
+                    needs_separator = true;
+                }
+                Component::ParentDir => {
+                    if needs_separator {
+                        buf.push('/');
+                    }
+                    buf.push_str("..");
+                    needs_separator = true;
+                }
+                Component::Normal(part) => {
+                    if needs_separator {
+                        buf.push('/');
+                    }
+                    buf.push_str(&part.to_string_lossy());
+                    needs_separator = true;
+                }
+            }
+        }
+
+        buf
+    }
+
+    fn try_sanitize_path_full(path: &Path) -> Result<String, EntryNameError> {
+        let path = str::from_utf8(path.as_os_str().as_encoded_bytes())?;
+        Ok(Self::sanitize_utf8_full_path(Utf8Path::new(path)))
     }
 
     /// Extracts a string slice containing the entire [EntryName].
@@ -416,6 +588,30 @@ mod tests {
         assert_eq!("test/test", EntryName::from("test/test/"));
     }
 
+    #[test]
+    fn full_path_preservation() {
+        assert_eq!("/etc/passwd", EntryName::from_full_path("/etc/passwd"));
+        assert_eq!("/", EntryName::from_full_path("/"));
+        assert_eq!("../var/log", EntryName::from_full_path("../var/log"));
+    }
+
+    #[test]
+    fn full_path_sanitization() {
+        assert_eq!("/etc/passwd", EntryName::sanitize_full_path("/etc/passwd"));
+        assert_eq!("..", EntryName::sanitize_full_path("../"));
+        assert_eq!("", EntryName::sanitize_full_path("a/../"));
+    }
+
+    #[test]
+    fn full_path_lossy() {
+        let path = PathBuf::from("/tmp/./archive");
+        assert_eq!(
+            "/tmp/archive",
+            EntryName::from_full_path_lossy(path.clone())
+        );
+        assert_eq!("/tmp/archive", EntryName::sanitize_full_path_lossy(path));
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn remove_prefix() {
@@ -483,6 +679,9 @@ mod tests {
         let invalid_bytes = [0x74, 0x65, 0x73, 0x74, 0xFF, 0x2E, 0x74, 0x78, 0x74];
         let invalid_os_str = OsStr::from_bytes(&invalid_bytes);
         assert!(EntryName::try_from(invalid_os_str).is_err());
+        let invalid_path = PathBuf::from(invalid_os_str);
+        assert!(EntryName::try_from_full_path(&invalid_path).is_err());
+        assert!(EntryName::try_sanitize_full_path(&invalid_path).is_err());
     }
 
     #[test]
@@ -490,6 +689,15 @@ mod tests {
         // Path conversions
         let path = Path::new("test.txt");
         assert_eq!("test.txt", EntryName::try_from(path).unwrap());
+
+        let absolute = Path::new("/var/log/messages");
+        assert_eq!(
+            "/var/log/messages",
+            EntryName::try_from_full_path(absolute).unwrap()
+        );
+
+        let sanitized = EntryName::try_sanitize_full_path(absolute).unwrap();
+        assert_eq!("/var/log/messages", sanitized);
 
         let path_buf = PathBuf::from("test.txt");
         assert_eq!("test.txt", EntryName::try_from(&path_buf).unwrap());
