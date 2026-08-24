@@ -32,11 +32,14 @@ archive_field() {
   local numeric="$2"
   local field="$3"
   local args=(list --unstable --format csv -f "$archive" file)
+  local listing
   if [[ "$numeric" == numeric ]]; then
     args=(list --unstable --format csv --numeric-owner -f "$archive" file)
   fi
-  pna --log-level error "${args[@]}" | python3 -c \
-    'import csv, sys; print(next(csv.DictReader(sys.stdin))[sys.argv[1]])' "$field"
+  listing="$(pna --log-level error "${args[@]}")" || return
+  python3 -c \
+    'import csv, io, sys; print(next(csv.DictReader(io.StringIO(sys.argv[1])))[sys.argv[2]])' \
+    "$listing" "$field"
 }
 
 @test "bsdtar --uid/--uname metadata semantics" {
