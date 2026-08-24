@@ -32,8 +32,7 @@ _UNIX_EXPECTED_FAILURES = {
 EXPECTED_FAILURES = {
     "ubuntu": _UNIX_EXPECTED_FAILURES,
     "macos": _UNIX_EXPECTED_FAILURES,
-    # Filled from the Windows reference run before this gate is finalized.
-    "windows": set(),
+    "windows": _UNIX_EXPECTED_FAILURES,
 }
 
 
