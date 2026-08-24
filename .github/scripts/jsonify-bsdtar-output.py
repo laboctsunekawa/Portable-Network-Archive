@@ -1,8 +1,19 @@
 #!/usr/bin/env python3
-"""Parse bsdtar_test verbose output into structured JSON."""
+"""Parse bsdtar_test verbose output and enforce the compatibility baseline."""
 import json
+import os
 import re
 import sys
+
+
+# Kept in this script deliberately: the compatibility baseline is CI policy,
+# not product configuration. Entries are test names from libarchive v3.8.5's
+# bsdtar_test suite and are platform-specific.
+EXPECTED_FAILURES = {
+    "ubuntu": set(),
+    "macos": set(),
+    "windows": set(),
+}
 
 
 def parse_bsdtar_test_output(lines):
@@ -83,6 +94,33 @@ def parse_bsdtar_test_output(lines):
     }
 
 
+def validate_expected_failures(result, platform):
+    """Require the observed failing-test set to equal the platform XFAIL set."""
+    if platform not in EXPECTED_FAILURES:
+        return True
+
+    actual = {
+        test["name"] for test in result["tests"] if test["status"] == "failed"
+    }
+    expected = EXPECTED_FAILURES[platform]
+    unexpected = sorted(actual - expected)
+    xpass = sorted(expected - actual)
+
+    if unexpected:
+        print(
+            "Unexpected bsdtar compatibility failures: " + ", ".join(unexpected),
+            file=sys.stderr,
+        )
+    if xpass:
+        print(
+            "Expected failures unexpectedly passed; remove them from XFAIL: "
+            + ", ".join(xpass),
+            file=sys.stderr,
+        )
+
+    return not unexpected and not xpass
+
+
 def main():
     if len(sys.argv) > 1:
         try:
@@ -95,8 +133,13 @@ def main():
 
     with f:
         result = parse_bsdtar_test_output(f)
+
     json.dump(result, sys.stdout, indent=2)
     print()
+
+    platform = os.environ.get("MATRIX_NAME")
+    if platform and not validate_expected_failures(result, platform):
+        sys.exit(1)
 
 
 if __name__ == "__main__":
