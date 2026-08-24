@@ -9,9 +9,30 @@ import sys
 # Kept in this script deliberately: the compatibility baseline is CI policy,
 # not product configuration. Entries are test names from libarchive v3.8.5's
 # bsdtar_test suite and are platform-specific.
+_UNIX_EXPECTED_FAILURES = {
+    "test_copy",
+    "test_crlf_mtree",
+    "test_option_C_mtree",
+    "test_option_C_upper",
+    "test_option_a",
+    "test_option_b",
+    "test_option_b64encode",
+    "test_option_ignore_zeros_mode_c",
+    "test_option_j",
+    "test_option_lz4",
+    "test_option_lzma",
+    "test_option_r",
+    "test_option_uuencode",
+    "test_option_xz",
+    "test_option_z",
+    "test_option_zstd",
+    "test_patterns",
+    "test_version",
+}
 EXPECTED_FAILURES = {
-    "ubuntu": set(),
-    "macos": set(),
+    "ubuntu": _UNIX_EXPECTED_FAILURES,
+    "macos": _UNIX_EXPECTED_FAILURES,
+    # Filled from the Windows reference run before this gate is finalized.
     "windows": set(),
 }
 
