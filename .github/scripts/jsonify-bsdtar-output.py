@@ -117,7 +117,8 @@ def parse_bsdtar_test_output(lines):
 def validate_expected_failures(result, platform):
     """Require the observed failing-test set to equal the platform XFAIL set."""
     if platform not in EXPECTED_FAILURES:
-        return True
+        print(f"Unknown bsdtar compatibility platform: {platform}", file=sys.stderr)
+        return False
 
     actual = {
         test["name"] for test in result["tests"] if test["status"] == "failed"
