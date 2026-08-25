@@ -114,11 +114,16 @@ def parse_bsdtar_test_output(lines):
     }
 
 
-def validate_expected_failures(result, platform):
-    """Require the observed failing-test set to equal the platform XFAIL set."""
+def compare_expected_failures(result, platform):
+    """Return the exact set difference between observed failures and XFAIL."""
     if platform not in EXPECTED_FAILURES:
-        print(f"Unknown bsdtar compatibility platform: {platform}", file=sys.stderr)
-        return False
+        return {
+            "platform": platform,
+            "error": f"Unknown bsdtar compatibility platform: {platform}",
+            "unexpected_failures": [],
+            "unexpected_passes": [],
+            "matches": False,
+        }
 
     actual = {
         test["name"] for test in result["tests"] if test["status"] == "failed"
@@ -127,19 +132,51 @@ def validate_expected_failures(result, platform):
     unexpected = sorted(actual - expected)
     xpass = sorted(expected - actual)
 
-    if unexpected:
-        print(
-            "Unexpected bsdtar compatibility failures: " + ", ".join(unexpected),
-            file=sys.stderr,
-        )
-    if xpass:
-        print(
-            "Expected failures unexpectedly passed; remove them from XFAIL: "
-            + ", ".join(xpass),
-            file=sys.stderr,
-        )
+    return {
+        "platform": platform,
+        "unexpected_failures": unexpected,
+        "unexpected_passes": xpass,
+        "matches": not unexpected and not xpass,
+    }
 
-    return not unexpected and not xpass
+
+def report_baseline_mismatch(comparison):
+    """Make an XFAIL mismatch visible in logs and the GitHub job summary."""
+    error = comparison.get("error")
+    unexpected = comparison["unexpected_failures"]
+    xpass = comparison["unexpected_passes"]
+
+    if error:
+        print(error, file=sys.stderr)
+    if unexpected:
+        print("Unexpected bsdtar compatibility failures:", file=sys.stderr)
+        for name in unexpected:
+            print(f"  {name}", file=sys.stderr)
+    if xpass:
+        print("Expected failures unexpectedly passed; remove from XFAIL:", file=sys.stderr)
+        for name in xpass:
+            print(f"  {name}", file=sys.stderr)
+
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path or comparison["matches"]:
+        return
+
+    with open(summary_path, "a", encoding="utf-8") as summary:
+        summary.write(
+            f"### XFAIL baseline mismatch ({comparison['platform']})\n\n"
+        )
+        if error:
+            summary.write(f"> **Error:** {error}\n\n")
+        if unexpected:
+            summary.write("**Unexpected failures**\n\n")
+            for name in unexpected:
+                summary.write(f"- `{name}`\n")
+            summary.write("\n")
+        if xpass:
+            summary.write("**Unexpected passes (stale XFAIL)**\n\n")
+            for name in xpass:
+                summary.write(f"- `{name}`\n")
+            summary.write("\n")
 
 
 def main():
@@ -155,11 +192,17 @@ def main():
     with f:
         result = parse_bsdtar_test_output(f)
 
+    platform = os.environ.get("MATRIX_NAME")
+    comparison = None
+    if platform:
+        comparison = compare_expected_failures(result, platform)
+        result["xfail"] = comparison
+
     json.dump(result, sys.stdout, indent=2)
     print()
 
-    platform = os.environ.get("MATRIX_NAME")
-    if platform and not validate_expected_failures(result, platform):
+    if comparison and not comparison["matches"]:
+        report_baseline_mismatch(comparison)
         sys.exit(1)
 
 
