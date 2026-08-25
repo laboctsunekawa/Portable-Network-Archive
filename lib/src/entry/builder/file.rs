@@ -1,7 +1,7 @@
 //! Builder for regular file entries.
 use super::{EntryBuilderCore, data_writer};
 use crate::{
-    Metadata, NormalEntry, WriteOptions,
+    Metadata, NormalEntry, SparseMap, WriteOptions,
     chunk::RawChunk,
     cipher::CipherWriter,
     compress::CompressionWriter,
@@ -98,6 +98,14 @@ impl FileEntryBuilder {
         self
     }
 
+    /// Sets the sparse extent map for this file. Written bytes must equal the
+    /// sum of region sizes; holes are omitted from the payload.
+    #[inline]
+    pub fn sparse_map(&mut self, sparse_map: Option<SparseMap>) -> &mut Self {
+        self.core.set_sparse_map(sparse_map);
+        self
+    }
+
     /// Sets the maximum chunk size for data written to this entry.
     ///
     /// The default is the maximum allowed chunk size (~4GB).
@@ -129,8 +137,27 @@ impl FileEntryBuilder {
     #[inline]
     #[must_use = "building an entry without using it is wasteful"]
     pub fn build(self) -> io::Result<NormalEntry> {
+        let sparse_logical_size = if let Some(map) = self.core.sparse_map() {
+            let expected = map.data_size().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "SPAR data size overflows")
+            })? as u128;
+            if self.file_size != expected {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "sparse payload length {} does not match SPAR data size {}",
+                        self.file_size, expected
+                    ),
+                ));
+            }
+            Some(u128::from(map.logical_size()))
+        } else {
+            None
+        };
         let data = self.data.try_into_inner()?.try_into_inner()?.inner;
-        let raw_file_size = self.store_file_size.then_some(self.file_size);
+        let raw_file_size = self
+            .store_file_size
+            .then_some(sparse_logical_size.unwrap_or(self.file_size));
         Ok(self.core.build(data, raw_file_size))
     }
 }
@@ -168,5 +195,23 @@ impl AsyncWrite for FileEntryBuilder {
     #[inline]
     fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DataRegion;
+
+    #[test]
+    fn sparse_file_size_hint_uses_logical_size() {
+        let mut builder = FileEntryBuilder::new("sparse".into()).unwrap();
+        builder.write_all(b"data").unwrap();
+        builder.sparse_map(Some(
+            SparseMap::try_new(10, vec![DataRegion::new(2, 4)]).unwrap(),
+        ));
+        let entry = builder.build().unwrap();
+
+        assert_eq!(entry.metadata().raw_file_size(), Some(10));
     }
 }

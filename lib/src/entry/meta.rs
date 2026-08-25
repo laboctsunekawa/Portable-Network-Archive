@@ -2,7 +2,10 @@
 
 use crate::util::bounded::{LengthExceeded, str::BoundedString};
 use crate::{Duration, UnknownValueError};
-use crate::{RawChunk, entry::ExtendedAttribute};
+use crate::{
+    RawChunk,
+    entry::{ExtendedAttribute, SparseMap},
+};
 use std::io::{self, Read};
 use std::ops::Deref;
 use std::str;
@@ -54,6 +57,7 @@ pub struct Metadata {
 /// any other extra chunk.
 pub struct EntryWriteAttributes {
     pub(crate) metadata: Metadata,
+    pub(crate) sparse_map: Option<SparseMap>,
     pub(crate) extra_chunks: Vec<RawChunk>,
 }
 
@@ -63,6 +67,7 @@ impl EntryWriteAttributes {
     pub fn new(metadata: Metadata) -> Self {
         Self {
             metadata,
+            sparse_map: None,
             extra_chunks: Vec::new(),
         }
     }
@@ -71,6 +76,19 @@ impl EntryWriteAttributes {
     #[inline]
     pub const fn metadata(&self) -> &Metadata {
         &self.metadata
+    }
+
+    /// Sets the sparse extent map for a regular file entry.
+    #[inline]
+    pub fn with_sparse_map(mut self, sparse_map: Option<SparseMap>) -> Self {
+        self.sparse_map = sparse_map;
+        self
+    }
+
+    /// Returns the sparse extent map, if set.
+    #[inline]
+    pub fn sparse_map(&self) -> Option<&SparseMap> {
+        self.sparse_map.as_ref()
     }
 
     /// Adds a raw extra chunk, preserving insertion order.
@@ -244,7 +262,11 @@ impl Metadata {
         self
     }
 
-    /// Returns the raw file size of this entry's data in bytes.
+    /// Returns the optional `fSIZ` size hint.
+    ///
+    /// This value is not authoritative file length and must not be used as a
+    /// filesystem size or as a trusted decoded-data bound. Sparse logical size
+    /// is carried by [`SparseMap::logical_size`].
     #[inline]
     pub const fn raw_file_size(&self) -> Option<u128> {
         self.raw_file_size

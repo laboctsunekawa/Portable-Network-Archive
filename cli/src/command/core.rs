@@ -339,6 +339,7 @@ pub(crate) struct CreateOptions {
     pub(crate) option: WriteOptions,
     pub(crate) keep_options: KeepOptions,
     pub(crate) pathname_editor: PathnameEditor,
+    pub(crate) sparse: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -883,9 +884,7 @@ fn copy_buffered(file: fs::File, writer: &mut impl Write) -> io::Result<()> {
 }
 
 #[inline]
-pub(crate) fn write_from_path(writer: &mut impl Write, path: impl AsRef<Path>) -> io::Result<()> {
-    let path = path.as_ref();
-    let mut file = fs::File::open(path)?;
+fn write_from_file(writer: &mut impl Write, mut file: fs::File) -> io::Result<()> {
     let file_size = file
         .metadata()
         .ok()
@@ -909,12 +908,40 @@ pub(crate) fn write_from_path(writer: &mut impl Write, path: impl AsRef<Path>) -
     copy_buffered(file, writer)
 }
 
+#[inline]
+pub(crate) fn write_from_path(writer: &mut impl Write, path: impl AsRef<Path>) -> io::Result<()> {
+    write_from_file(writer, fs::File::open(path)?)
+}
+
+pub(crate) fn write_sparse_from_path(
+    entry: &mut FileEntryBuilder,
+    path: impl AsRef<Path>,
+) -> io::Result<()> {
+    let mut file = fs::File::open(path)?;
+    let Some(map) = utils::sparse::detect_sparse_map(&file)? else {
+        return write_from_file(entry, file);
+    };
+    for region in map.regions().iter().filter(|region| region.size() != 0) {
+        file.seek(io::SeekFrom::Start(region.offset()))?;
+        let copied = io::copy(&mut (&mut file).take(region.size()), entry)?;
+        if copied != region.size() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "file changed while reading sparse extent",
+            ));
+        }
+    }
+    entry.sparse_map(Some(map));
+    Ok(())
+}
+
 pub(crate) fn create_entry(
     item: &CollectedEntry,
     CreateOptions {
         option,
         keep_options,
         pathname_editor,
+        sparse,
     }: &CreateOptions,
 ) -> io::Result<Option<NormalEntry>> {
     let CollectedEntry {
@@ -954,7 +981,11 @@ pub(crate) fn create_entry(
         }
         StoreAs::File => {
             let mut entry = FileEntryBuilder::new_with_options(entry_name, option)?;
-            write_from_path(&mut entry, path)?;
+            if *sparse {
+                write_sparse_from_path(&mut entry, path)?;
+            } else {
+                write_from_path(&mut entry, path)?;
+            }
             entry.metadata(build_entry_metadata(path, keep_options, metadata)?);
             for chunk in collect_extra_chunks(path, keep_options, metadata)? {
                 entry.add_extra_chunk(chunk);
@@ -2000,6 +2031,7 @@ fn transform_normal_entry(
         option,
         pathname_editor,
         keep_options,
+        sparse: _,
     }: &CreateOptions,
     password: Option<&[u8]>,
     reencrypt_options: &mut ReencryptOptionsCache,

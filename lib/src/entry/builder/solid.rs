@@ -23,12 +23,18 @@ use std::{
 /// [`SolidEntryBuilder::write_file`] or [`SolidEntryBuilder::write_opaque`].
 pub struct SolidEntryDataWriter<'a>(
     InternalArchiveDataWriter<&'a mut InternalDataWriter<FlattenWriter>>,
+    u64,
 );
 
 impl Write for SolidEntryDataWriter<'_> {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.write(buf)
+        let written = self.0.write(buf)?;
+        self.1 = self
+            .1
+            .checked_add(written as u64)
+            .ok_or_else(|| io::Error::other("entry payload length overflow"))?;
+        Ok(written)
     }
 
     #[inline]
@@ -183,9 +189,9 @@ impl SolidEntryBuilder {
             option,
             self.max_file_chunk_size,
             |w| {
-                let mut writer = SolidEntryDataWriter(w);
+                let mut writer = SolidEntryDataWriter(w, 0);
                 f(&mut writer)?;
-                Ok(writer.0)
+                Ok((writer.0, writer.1))
             },
         )
     }
@@ -222,9 +228,9 @@ impl SolidEntryBuilder {
             WriteOptions::store(),
             self.max_file_chunk_size,
             |w| {
-                let mut writer = SolidEntryDataWriter(w);
+                let mut writer = SolidEntryDataWriter(w, 0);
                 f(&mut writer)?;
-                Ok(writer.0)
+                Ok((writer.0, writer.1))
             },
         )
     }
