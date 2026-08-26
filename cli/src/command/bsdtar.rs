@@ -734,8 +734,6 @@ struct CreationPermissionStrategyResolver {
 
 impl CreationPermissionStrategyResolver {
     fn resolve(self) -> (ModeStrategy, OwnerStrategy) {
-        let clear_uname = self.numeric_owner || (self.uid.is_some() && self.uname.is_none());
-        let clear_gname = self.numeric_owner || (self.gid.is_some() && self.gname.is_none());
         let mode_strategy = if self.no_same_permissions {
             ModeStrategy::Never
         } else {
@@ -746,12 +744,12 @@ impl CreationPermissionStrategyResolver {
         } else {
             OwnerStrategy::Preserve {
                 options: OwnerOptions {
-                    uname: if clear_uname {
+                    uname: if self.numeric_owner {
                         Some(String::new())
                     } else {
                         self.uname
                     },
-                    gname: if clear_gname {
+                    gname: if self.numeric_owner {
                         Some(String::new())
                     } else {
                         self.gname
