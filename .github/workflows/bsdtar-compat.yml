@@ -194,7 +194,7 @@ jobs:
         if: ${{ matrix.name == 'windows' }}
         shell: pwsh
         run: |
-          git config --global core.autrlf false
+          git config --global core.autocrlf false
           git config --global core.eol lf
           git config --global core.longpaths true
 
