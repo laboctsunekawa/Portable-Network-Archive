@@ -343,6 +343,9 @@ pub(crate) struct CreateOptions {
 
 #[derive(Clone, Debug)]
 pub(crate) struct CollectedEntry {
+    /// Filesystem path used for I/O and metadata collection.
+    pub(crate) source_path: PathBuf,
+    /// Archive-facing path used for entry naming and transformations.
     pub(crate) path: PathBuf,
     pub(crate) store_as: StoreAs,
     pub(crate) metadata: fs::Metadata,
@@ -755,7 +758,11 @@ pub(crate) fn collect_items_with_state(
                     let link_target_type = detect_symlink_target_type(entry_path, &meta)?;
                     Some((StoreAs::Symlink(link_target_type), meta))
                 } else if is_file {
-                    if let Some(linked) = hardlink_resolver.resolve(entry_path).ok().flatten() {
+                    if let Some(linked) = hardlink_resolver
+                        .resolve_as(entry_path, archive_path)
+                        .ok()
+                        .flatten()
+                    {
                         Some((StoreAs::Hardlink(linked), fs::symlink_metadata(entry_path)?))
                     } else {
                         Some((StoreAs::File, fs::metadata(entry_path)?))
@@ -779,6 +786,7 @@ pub(crate) fn collect_items_with_state(
                         .matches(metadata.created().ok(), metadata.modified().ok())
                 {
                     out.push(CollectedEntry {
+                        source_path: entry_path.to_path_buf(),
                         path: archive_path.to_path_buf(),
                         store_as,
                         metadata,
@@ -793,6 +801,7 @@ pub(crate) fn collect_items_with_state(
                     if is_broken_symlink_error(&metadata, ioe) {
                         let link_target_type = detect_symlink_target_type(path, &metadata)?;
                         out.push(CollectedEntry {
+                            source_path: path.to_path_buf(),
                             path: path.to_path_buf(),
                             store_as: StoreAs::Symlink(link_target_type),
                             metadata,
@@ -918,6 +927,7 @@ pub(crate) fn create_entry(
     }: &CreateOptions,
 ) -> io::Result<Option<NormalEntry>> {
     let CollectedEntry {
+        source_path,
         path,
         store_as,
         metadata,
@@ -933,38 +943,38 @@ pub(crate) fn create_entry(
                 return Ok(None);
             };
             let mut entry = HardLinkEntryBuilder::new(entry_name, reference)?;
-            entry.metadata(build_entry_metadata(path, keep_options, metadata)?);
-            for chunk in collect_extra_chunks(path, keep_options, metadata)? {
+            entry.metadata(build_entry_metadata(source_path, keep_options, metadata)?);
+            for chunk in collect_extra_chunks(source_path, keep_options, metadata)? {
                 entry.add_extra_chunk(chunk);
             }
             entry.build()
         }
         StoreAs::Symlink(link_target_type) => {
-            let source = fs::read_link(path)?;
+            let source = fs::read_link(source_path)?;
             let reference = pathname_editor.edit_symlink(&source);
             let mut entry = SymlinkEntryBuilder::new(entry_name, reference)?;
             entry.metadata(
-                build_entry_metadata(path, keep_options, metadata)?
+                build_entry_metadata(source_path, keep_options, metadata)?
                     .with_link_target_type(Some(*link_target_type)),
             );
-            for chunk in collect_extra_chunks(path, keep_options, metadata)? {
+            for chunk in collect_extra_chunks(source_path, keep_options, metadata)? {
                 entry.add_extra_chunk(chunk);
             }
             entry.build()
         }
         StoreAs::File => {
             let mut entry = FileEntryBuilder::new_with_options(entry_name, option)?;
-            write_from_path(&mut entry, path)?;
-            entry.metadata(build_entry_metadata(path, keep_options, metadata)?);
-            for chunk in collect_extra_chunks(path, keep_options, metadata)? {
+            write_from_path(&mut entry, source_path)?;
+            entry.metadata(build_entry_metadata(source_path, keep_options, metadata)?);
+            for chunk in collect_extra_chunks(source_path, keep_options, metadata)? {
                 entry.add_extra_chunk(chunk);
             }
             entry.build()
         }
         StoreAs::Dir => {
             let mut entry = DirEntryBuilder::new(entry_name);
-            entry.metadata(build_entry_metadata(path, keep_options, metadata)?);
-            for chunk in collect_extra_chunks(path, keep_options, metadata)? {
+            entry.metadata(build_entry_metadata(source_path, keep_options, metadata)?);
+            for chunk in collect_extra_chunks(source_path, keep_options, metadata)? {
                 entry.add_extra_chunk(chunk);
             }
             entry.build()
