@@ -134,7 +134,6 @@ jobs:
 
       - name: Run bsdtar_test with bsdtar
         id: bsdtar_test
-        continue-on-error: true
         run: |
           WORKSPACE="$GITHUB_WORKSPACE"
           if [ "$MATRIX_NAME" = "windows" ]; then
