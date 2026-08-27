@@ -49,9 +49,7 @@ impl User {
         {
             match imp::User::from_uid((uid as u32).into()) {
                 Ok(user) => Ok(Self(UserInner::Resolved(user))),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    Ok(Self(UserInner::Numeric(uid)))
-                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Self(UserInner::Numeric(uid))),
                 Err(e) => Err(e),
             }
         }
@@ -112,6 +110,23 @@ impl User {
             None
         }
     }
+
+    #[cfg(unix)]
+    #[inline]
+    pub(super) fn into_raw(self) -> u32 {
+        match self.0 {
+            UserInner::Resolved(user) => user.as_raw(),
+            UserInner::Numeric(uid) => uid as u32,
+        }
+    }
+
+    #[cfg(windows)]
+    #[inline]
+    pub(super) fn into_raw(self) -> imp::User {
+        match self.0 {
+            UserInner::Resolved(user) => user,
+        }
+    }
 }
 
 enum GroupInner {
@@ -135,9 +150,7 @@ impl Group {
         {
             match imp::Group::from_gid((gid as u32).into()) {
                 Ok(group) => Ok(Self(GroupInner::Resolved(group))),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    Ok(Self(GroupInner::Numeric(gid)))
-                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Self(GroupInner::Numeric(gid))),
                 Err(e) => Err(e),
             }
         }
@@ -181,6 +194,23 @@ impl Group {
         #[cfg(not(unix))]
         {
             None
+        }
+    }
+
+    #[cfg(unix)]
+    #[inline]
+    pub(super) fn into_raw(self) -> u32 {
+        match self.0 {
+            GroupInner::Resolved(group) => group.as_raw(),
+            GroupInner::Numeric(gid) => gid as u32,
+        }
+    }
+
+    #[cfg(windows)]
+    #[inline]
+    pub(super) fn into_raw(self) -> imp::Group {
+        match self.0 {
+            GroupInner::Resolved(group) => group,
         }
     }
 }
