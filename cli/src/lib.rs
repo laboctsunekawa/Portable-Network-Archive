@@ -2,6 +2,8 @@
 #![doc = include_str!("../README.md")]
 mod chunk;
 pub mod cli;
+#[doc(hidden)]
+pub mod cli_order;
 pub mod command;
 mod ext;
 mod utils;
