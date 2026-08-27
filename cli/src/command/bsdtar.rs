@@ -8,15 +8,15 @@ use crate::{
         append::{open_archive_then_seek_to_end, run_append_archive},
         ask_password,
         core::{
-            AclStrategy, CollectOptions, CreateOptions, FflagsStrategy, ItemSource, KeepOptions,
-            MacMetadataStrategy, ModeStrategy, OwnerOptions, OwnerStrategy, PathFilter,
-            PathTransformers, PathnameEditor, SplitArchiveReader, StagedArchive,
-            TimeFilterResolver, TimestampStrategyResolver, TransformStrategyUnSolid, Umask,
-            XattrStrategy, apply_chroot, collect_items_from_paths, collect_items_from_sources,
-            collect_split_archives,
+            AclStrategy, ArchiveSource, CollectOptions, CollectedEntry, CollectedItem, CreateOptions,
+            FflagsStrategy, ItemSource, KeepOptions, MacMetadataStrategy, ModeStrategy,
+            OwnerOptions, OwnerStrategy, PathFilter, PathTransformers, PathnameEditor,
+            SplitArchiveReader, StagedArchive, TimeFilterResolver, TimestampStrategyResolver,
+            TransformStrategyUnSolid, Umask, XattrStrategy, apply_chroot, collect_items_from_paths,
+            collect_items_from_sources, collect_split_archives,
             path_lock::OrderedPathLocks,
             re::{bsd::SubstitutionRule, gnu::TransformRule},
-            read_paths, run_across_archive, validate_no_duplicate_stdin,
+            read_paths, run_across_archive,
         },
         create::{CreationContext, create_archive_file},
         extract::{OutputOption, OverwriteStrategy, run_extract_archive_reader},
@@ -25,11 +25,11 @@ use crate::{
     },
     utils::{self, BsdGlobMatcher, PathPartExt, VCS_FILES, fs::HardlinkResolver},
 };
-use clap::{ArgGroup, Args, Parser, ValueHint};
+use clap::{ArgGroup, ArgMatches, Args, Parser, ValueHint};
 use pna::Archive;
 use std::{
     env, io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
     time::SystemTime,
 };
@@ -78,6 +78,12 @@ impl CompressionAlgorithmArgs {
 
         (compression, level)
     }
+}
+
+#[derive(Clone, Debug)]
+enum OrderedOperand {
+    ChangeDir(PathBuf),
+    File(String),
 }
 
 #[derive(Args, Clone, Debug)]
@@ -567,10 +573,11 @@ pub(crate) struct BsdtarCommand {
         long = "cd",
         visible_aliases = ["directory"],
         value_name = "DIRECTORY",
+        action = clap::ArgAction::Append,
         help = "Change directory before adding the following files",
         value_hint = ValueHint::DirPath
     )]
-    working_dir: Option<PathBuf>,
+    working_dir: Vec<PathBuf>,
     #[arg(
         short = 'O',
         long = "to-stdout",
@@ -612,6 +619,8 @@ pub(crate) struct BsdtarCommand {
     file: Option<String>,
     #[arg(help = "Files or patterns")]
     files: Vec<String>,
+    #[arg(skip)]
+    ordered_operands: Vec<OrderedOperand>,
     #[arg(
         long,
         help = "Filenames or patterns are separated by null characters, not by newlines"
@@ -649,6 +658,192 @@ pub(crate) struct BsdtarCommand {
     version: (),
     #[arg(short = 'h', long, action = clap::ArgAction::Help, help = "Print help")]
     help: (),
+}
+
+impl BsdtarCommand {
+    pub(crate) fn capture_operand_order(&mut self, matches: &ArgMatches) {
+        let mut ordered = Vec::with_capacity(self.working_dir.len() + self.files.len());
+        if let Some(indices) = matches.indices_of("working_dir") {
+            ordered.extend(
+                indices
+                    .zip(self.working_dir.iter().cloned())
+                    .map(|(index, dir)| (index, OrderedOperand::ChangeDir(dir))),
+            );
+        }
+        if let Some(indices) = matches.indices_of("files") {
+            ordered.extend(
+                indices
+                    .zip(self.files.iter().cloned())
+                    .map(|(index, file)| (index, OrderedOperand::File(file))),
+            );
+        }
+        ordered.sort_by_key(|(index, _)| *index);
+        self.ordered_operands = ordered.into_iter().map(|(_, operand)| operand).collect();
+    }
+
+    fn take_ordered_operands(&mut self) -> Vec<OrderedOperand> {
+        if !self.ordered_operands.is_empty() {
+            return std::mem::take(&mut self.ordered_operands);
+        }
+        self.working_dir
+            .iter()
+            .cloned()
+            .map(OrderedOperand::ChangeDir)
+            .chain(self.files.iter().cloned().map(OrderedOperand::File))
+            .collect()
+    }
+}
+
+fn queue_chdir(pending: &mut Option<PathBuf>, dir: PathBuf) -> anyhow::Result<()> {
+    if dir.as_os_str().is_empty() {
+        anyhow::bail!("Meaningless argument for -C: ''");
+    }
+    if dir.has_root() {
+        *pending = Some(dir);
+    } else if let Some(base) = pending.as_mut() {
+        base.push(dir);
+    } else {
+        *pending = Some(dir);
+    }
+    Ok(())
+}
+
+fn apply_pending_chdir(pending: &mut Option<PathBuf>) -> io::Result<()> {
+    if let Some(dir) = pending.take() {
+        env::set_current_dir(dir)?;
+    }
+    Ok(())
+}
+
+fn apply_working_dirs(dirs: &[PathBuf]) -> anyhow::Result<()> {
+    let mut pending = None;
+    for dir in dirs {
+        queue_chdir(&mut pending, dir.clone())?;
+    }
+    apply_pending_chdir(&mut pending)?;
+    Ok(())
+}
+
+fn with_restored_current_dir<T>(f: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    let original = env::current_dir()?;
+    let result = f();
+    let restore = env::set_current_dir(&original);
+    match (result, restore) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(_), Err(err)) => Err(err.into()),
+        (Err(err), Err(restore_err)) => {
+            log::error!(
+                "Failed to restore current directory to {}: {}",
+                original.display(),
+                restore_err
+            );
+            Err(err)
+        }
+    }
+}
+
+fn absolutize_collected_items(items: &mut [CollectedItem], cwd: &Path) {
+    for item in items {
+        match item {
+            CollectedItem::Filesystem(entry) => {
+                if entry.source_path.is_relative() {
+                    entry.source_path = cwd.join(&entry.source_path);
+                }
+            }
+            CollectedItem::ArchiveMarker(ArchiveSource::File(path)) => {
+                if path.is_relative() {
+                    *path = cwd.join(&*path);
+                }
+            }
+            CollectedItem::ArchiveMarker(ArchiveSource::Stdin) => {}
+        }
+    }
+}
+
+fn absolutize_collected_entries(items: &mut [CollectedEntry], cwd: &Path) {
+    for entry in items {
+        if entry.source_path.is_relative() {
+            entry.source_path = cwd.join(&entry.source_path);
+        }
+    }
+}
+
+fn collect_ordered_sources(
+    operands: Vec<OrderedOperand>,
+    options: &CollectOptions<'_>,
+    resolver: &mut HardlinkResolver,
+) -> anyhow::Result<Vec<CollectedItem>> {
+    with_restored_current_dir(|| {
+        let mut pending = None;
+        let mut seen_stdin = false;
+        let mut result = Vec::new();
+        for operand in operands {
+            match operand {
+                OrderedOperand::ChangeDir(dir) => queue_chdir(&mut pending, dir)?,
+                OrderedOperand::File(raw) => {
+                    let parsed = ItemSource::parse(&raw);
+                    let requires_cwd = match &parsed {
+                        ItemSource::Filesystem(path) => !path.is_absolute(),
+                        ItemSource::Archive(_) => true,
+                    };
+                    if requires_cwd {
+                        apply_pending_chdir(&mut pending)?;
+                    }
+                    for expanded in utils::expand_bsdtar_windows_globs(vec![raw])? {
+                        let source = ItemSource::parse(&expanded);
+                        if matches!(source, ItemSource::Archive(ArchiveSource::Stdin)) {
+                            if seen_stdin {
+                                anyhow::bail!(
+                                    "stdin (@- or @) can only be specified once as an archive source"
+                                );
+                            }
+                            seen_stdin = true;
+                        }
+                        let mut items = collect_items_from_sources([source], options, resolver)?;
+                        let cwd = env::current_dir()?;
+                        absolutize_collected_items(&mut items, &cwd);
+                        result.extend(items);
+                    }
+                }
+            }
+        }
+        Ok(result)
+    })
+}
+
+fn collect_ordered_paths(
+    operands: Vec<OrderedOperand>,
+    options: &CollectOptions<'_>,
+    resolver: &mut HardlinkResolver,
+) -> anyhow::Result<Vec<CollectedEntry>> {
+    with_restored_current_dir(|| {
+        let mut pending = None;
+        let mut result = Vec::new();
+        for operand in operands {
+            match operand {
+                OrderedOperand::ChangeDir(dir) => queue_chdir(&mut pending, dir)?,
+                OrderedOperand::File(raw) => {
+                    if !Path::new(&raw).is_absolute() {
+                        apply_pending_chdir(&mut pending)?;
+                    }
+                    for expanded in utils::expand_bsdtar_windows_globs(vec![raw])? {
+                        let mut items =
+                            collect_items_from_paths([expanded], options, resolver)?;
+                        let cwd = env::current_dir()?;
+                        absolutize_collected_entries(&mut items, &cwd);
+                        result.extend(items);
+                    }
+                }
+            }
+        }
+        Ok(result)
+    })
+}
+
+fn write_empty_archive(writer: impl io::Write) -> io::Result<()> {
+    Archive::write_header(writer)?.finalize()?;
+    Ok(())
 }
 
 impl Command for BsdtarCommand {
@@ -848,20 +1043,28 @@ impl ExtractionPermissionStrategyResolver {
 }
 
 #[hooq::hooq(anyhow)]
-fn run_create_archive(args: BsdtarCommand) -> anyhow::Result<()> {
+fn run_create_archive(mut args: BsdtarCommand) -> anyhow::Result<()> {
     let current_dir = env::current_dir()?;
+    let mut operands = args.take_ordered_operands();
+    if let Some(path) = args.files_from.take() {
+        operands.extend(
+            read_paths(path, args.null)?
+                .into_iter()
+                .map(OrderedOperand::File),
+        );
+    }
+    if !operands
+        .iter()
+        .any(|operand| matches!(operand, OrderedOperand::File(_)))
+    {
+        anyhow::bail!("create mode requires at least one input path or @archive source");
+    }
+
     let password = ask_password(args.password)?;
     // NOTE: "-" will use stdout
     let mut file = args.file;
     file.take_if(|it| it == "-");
     let archive_file = file.take().map(|p| current_dir.join(p));
-    let mut files = args.files;
-    if let Some(path) = args.files_from {
-        files.extend(read_paths(path, args.null)?);
-    }
-    if files.is_empty() {
-        anyhow::bail!("create mode requires at least one input path or @archive source");
-    }
 
     let mut exclude = args.exclude;
     if let Some(p) = args.exclude_from {
@@ -889,13 +1092,6 @@ fn run_create_archive(args: BsdtarCommand) -> anyhow::Result<()> {
         missing_mtime: MissingTimePolicy::Include,
     }
     .resolve()?;
-    if let Some(working_dir) = args.working_dir {
-        env::set_current_dir(working_dir)?;
-    }
-    files = utils::expand_bsdtar_windows_globs(files)?;
-    // Parse sources AFTER changing directory so @archive paths are affected by -C
-    let sources = ItemSource::parse_many(&files);
-    validate_no_duplicate_stdin(&sources)?;
     let collect_options = CollectOptions {
         recursive: !args.no_recursive,
         keep_dir: !args.no_keep_dir,
@@ -908,7 +1104,17 @@ fn run_create_archive(args: BsdtarCommand) -> anyhow::Result<()> {
         time_filters: &time_filters,
     };
     let mut resolver = HardlinkResolver::new(collect_options.follow_links);
-    let target_items = collect_items_from_sources(sources, &collect_options, &mut resolver)?;
+    let target_items = match collect_ordered_sources(operands, &collect_options, &mut resolver) {
+        Ok(items) => items,
+        Err(err) => {
+            if let Some(file) = &archive_file {
+                write_empty_archive(utils::fs::file_create(file, !args.no_overwrite)?)?;
+            } else {
+                write_empty_archive(io::stdout().lock())?;
+            }
+            return Err(err);
+        }
+    };
     if args.check_links {
         for (path, expected, archived) in resolver.incomplete_links() {
             log::warn!(
@@ -1119,9 +1325,7 @@ fn run_extract_archive(ctx: &GlobalContext, args: BsdtarCommand) -> anyhow::Resu
     } else {
         None
     };
-    if let Some(working_dir) = args.working_dir {
-        env::set_current_dir(working_dir)?;
-    }
+    apply_working_dirs(&args.working_dir)?;
     apply_chroot(args.chroot)?;
     if let Some(archives) = archives {
         run_extract_archive_reader(
@@ -1239,8 +1443,16 @@ fn run_list_archive(args: BsdtarCommand) -> anyhow::Result<()> {
 }
 
 #[hooq::hooq(anyhow)]
-fn run_append(args: BsdtarCommand) -> anyhow::Result<()> {
+fn run_append(mut args: BsdtarCommand) -> anyhow::Result<()> {
     let current_dir = env::current_dir()?;
+    let mut operands = args.take_ordered_operands();
+    if let Some(path) = args.files_from.take() {
+        operands.extend(
+            read_paths(path, args.null)?
+                .into_iter()
+                .map(OrderedOperand::File),
+        );
+    }
     let password = ask_password(args.password)?;
     let password = password.as_deref();
     let option = build_write_options(
@@ -1300,10 +1512,6 @@ fn run_append(args: BsdtarCommand) -> anyhow::Result<()> {
     let mut file = args.file;
     file.take_if(|it| it == "-");
     let archive_path = file.take().map(|p| current_dir.join(p));
-    let mut files = args.files;
-    if let Some(path) = args.files_from {
-        files.extend(read_paths(path, args.null)?);
-    }
 
     let mut exclude = args.exclude;
     if let Some(p) = args.exclude_from {
@@ -1331,13 +1539,6 @@ fn run_append(args: BsdtarCommand) -> anyhow::Result<()> {
         missing_mtime: MissingTimePolicy::Include,
     }
     .resolve()?;
-    if let Some(working_dir) = args.working_dir {
-        env::set_current_dir(working_dir)?;
-    }
-    files = utils::expand_bsdtar_windows_globs(files)?;
-    // Parse sources AFTER changing directory so @archive paths are affected by -C
-    let sources = ItemSource::parse_many(&files);
-    validate_no_duplicate_stdin(&sources)?;
     let collect_options = CollectOptions {
         recursive: args.recursive,
         keep_dir: !args.no_keep_dir,
@@ -1350,9 +1551,9 @@ fn run_append(args: BsdtarCommand) -> anyhow::Result<()> {
         time_filters: &time_filters,
     };
     let mut resolver = HardlinkResolver::new(collect_options.follow_links);
+    let target_items = collect_ordered_sources(operands, &collect_options, &mut resolver)?;
     if let Some(file) = &archive_path {
         let archive = open_archive_then_seek_to_end(file, args.ignore_zeros)?;
-        let target_items = collect_items_from_sources(sources, &collect_options, &mut resolver)?;
         run_append_archive(
             &create_options,
             archive,
@@ -1364,7 +1565,6 @@ fn run_append(args: BsdtarCommand) -> anyhow::Result<()> {
             args.ignore_zeros,
         )
     } else {
-        let target_items = collect_items_from_sources(sources, &collect_options, &mut resolver)?;
         let mut output_archive = Archive::write_header(io::stdout().lock())?;
         run_across_archive(
             std::iter::once(io::stdin().lock()),
@@ -1401,8 +1601,16 @@ fn resolve_name_id(
     }
 }
 
-fn run_update(args: BsdtarCommand, umask: Umask) -> anyhow::Result<()> {
+fn run_update(mut args: BsdtarCommand, umask: Umask) -> anyhow::Result<()> {
     let current_dir = env::current_dir()?;
+    let mut operands = args.take_ordered_operands();
+    if let Some(path) = args.files_from.take() {
+        operands.extend(
+            read_paths(path, args.null)?
+                .into_iter()
+                .map(OrderedOperand::File),
+        );
+    }
     let password = ask_password(args.password)?;
     let password = password.as_deref();
     let option = build_write_options(
@@ -1479,11 +1687,6 @@ fn run_update(args: BsdtarCommand, umask: Umask) -> anyhow::Result<()> {
         .into());
     }
 
-    let mut files = args.files;
-    if let Some(path) = args.files_from {
-        files.extend(read_paths(path, args.null)?);
-    }
-
     let mut exclude = args.exclude;
     if let Some(p) = args.exclude_from {
         exclude.extend(read_paths(p, args.null)?);
@@ -1498,10 +1701,6 @@ fn run_update(args: BsdtarCommand, umask: Umask) -> anyhow::Result<()> {
         exclude.iter().map(|s| s.as_str()).chain(vcs_patterns),
     );
 
-    if let Some(working_dir) = args.working_dir {
-        env::set_current_dir(working_dir)?;
-    }
-    files = utils::expand_bsdtar_windows_globs(files)?;
     let time_filters = TimeFilterResolver {
         newer_ctime_than: args.newer_ctime_than.as_deref(),
         older_ctime_than: args.older_ctime_than.as_deref(),
@@ -1527,7 +1726,7 @@ fn run_update(args: BsdtarCommand, umask: Umask) -> anyhow::Result<()> {
         time_filters: &time_filters,
     };
     let mut resolver = HardlinkResolver::new(collect_options.follow_links);
-    let target_items = collect_items_from_paths(&files, &collect_options, &mut resolver)?;
+    let target_items = collect_ordered_paths(operands, &collect_options, &mut resolver)?;
 
     let archives = collect_split_archives(&archive_path)?;
 
