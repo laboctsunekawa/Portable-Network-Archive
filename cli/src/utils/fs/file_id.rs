@@ -21,7 +21,8 @@ struct FileId(u64, u64); // (device, inode)
 #[cfg(any(unix, windows))]
 #[derive(Debug, Clone)]
 struct HardlinkInfo {
-    first_path: PathBuf,
+    first_source_path: PathBuf,
+    first_archive_path: PathBuf,
     expected_nlinks: u64,
     archived_count: u64,
 }
@@ -100,17 +101,22 @@ impl HardlinkResolver {
 
     #[cfg(any(unix, windows))]
     #[inline]
-    pub(crate) fn resolve(&mut self, path: &Path) -> io::Result<Option<PathBuf>> {
-        let (id, nlinks) = get_file_id_and_nlinks(path, self.follow_symlink)?;
+    pub(crate) fn resolve_as(
+        &mut self,
+        source_path: &Path,
+        archive_path: &Path,
+    ) -> io::Result<Option<PathBuf>> {
+        let (id, nlinks) = get_file_id_and_nlinks(source_path, self.follow_symlink)?;
         if 1 < nlinks {
             if let Some(info) = self.seen.get_mut(&id) {
                 info.archived_count += 1;
-                return Ok(Some(info.first_path.clone()));
+                return Ok(Some(info.first_archive_path.clone()));
             }
             self.seen.insert(
                 id,
                 HardlinkInfo {
-                    first_path: path.to_path_buf(),
+                    first_source_path: source_path.to_path_buf(),
+                    first_archive_path: archive_path.to_path_buf(),
                     expected_nlinks: nlinks,
                     archived_count: 1,
                 },
@@ -121,8 +127,17 @@ impl HardlinkResolver {
 
     #[cfg(not(any(unix, windows)))]
     #[inline]
-    pub(crate) fn resolve(&mut self, _path: &Path) -> io::Result<Option<PathBuf>> {
+    pub(crate) fn resolve_as(
+        &mut self,
+        _source_path: &Path,
+        _archive_path: &Path,
+    ) -> io::Result<Option<PathBuf>> {
         Ok(None)
+    }
+
+    #[inline]
+    pub(crate) fn resolve(&mut self, path: &Path) -> io::Result<Option<PathBuf>> {
+        self.resolve_as(path, path)
     }
 
     /// Returns an iterator over files with incomplete hardlink sets.
@@ -132,7 +147,7 @@ impl HardlinkResolver {
         self.seen.values().filter_map(|info| {
             if info.archived_count < info.expected_nlinks {
                 Some((
-                    info.first_path.as_path(),
+                    info.first_source_path.as_path(),
                     info.expected_nlinks,
                     info.archived_count,
                 ))
