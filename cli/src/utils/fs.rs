@@ -54,14 +54,18 @@ pub(crate) fn lchown<P: AsRef<Path>>(
 ) -> io::Result<()> {
     #[cfg(windows)]
     fn inner(path: &Path, owner: Option<User>, group: Option<Group>) -> io::Result<()> {
-        windows::fs::lchown(path, owner.map(|it| it.0), group.map(|it| it.0))
+        windows::fs::lchown(
+            path,
+            owner.map(User::into_raw),
+            group.map(Group::into_raw),
+        )
     }
     #[cfg(unix)]
     fn inner(path: &Path, owner: Option<User>, group: Option<Group>) -> io::Result<()> {
         std::os::unix::fs::lchown(
             path,
-            owner.map(|it| it.0.as_raw()),
-            group.map(|it| it.0.as_raw()),
+            owner.map(User::into_raw),
+            group.map(Group::into_raw),
         )
     }
     inner(path.as_ref(), owner, group)
