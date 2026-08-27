@@ -1,5 +1,4 @@
-use clap::Parser;
-use portable_network_archive::cli;
+use portable_network_archive::{cli, cli_order};
 use portable_network_archive::command::ExitCodeError;
 use std::io;
 
@@ -8,7 +7,7 @@ fn run() -> anyhow::Result<()> {
     let args: Vec<_> = std::env::args_os().collect();
     let args = cli::expand_bsdtar_old_style_args(args);
     let args = cli::expand_bsdtar_w_option(args);
-    let cli = cli::Cli::parse_from(args);
+    let cli = cli_order::parse_cli_from(args);
     cli.init_logger()?;
     cli.execute()
 }
