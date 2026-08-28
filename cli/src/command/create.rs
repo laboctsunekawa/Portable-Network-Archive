@@ -44,6 +44,7 @@ use std::{
     group(ArgGroup::new("user-flag").args(["numeric_owner", "uname"])),
     group(ArgGroup::new("group-flag").args(["numeric_owner", "gname"])),
     group(ArgGroup::new("keep-timestamp-flag").args(["keep_timestamp", "no_keep_timestamp"])),
+    group(ArgGroup::new("sparse-flag").args(["sparse", "no_sparse"])),
     group(ArgGroup::new("ctime-older-than-source").args(["older_ctime", "older_ctime_than"])),
     group(ArgGroup::new("ctime-newer-than-source").args(["newer_ctime", "newer_ctime_than"])),
     group(ArgGroup::new("mtime-older-than-source").args(["older_mtime", "older_mtime_than"])),
@@ -177,6 +178,15 @@ pub(crate) struct CreateCommand {
         help = "Compress multiple files together for better compression ratio"
     )]
     solid: bool,
+    #[arg(
+        long,
+        requires = "unstable",
+        help_heading = "Unstable Options",
+        help = "Detect and preserve sparse file extents"
+    )]
+    sparse: bool,
+    #[arg(long, requires = "unstable", help_heading = "Unstable Options", action = ArgAction::SetTrue, help = "Do not detect sparse files")]
+    no_sparse: (),
     #[arg(long, value_name = "NAME", help = "Set user name for archive entries")]
     uname: Option<String>,
     #[arg(long, value_name = "NAME", help = "Set group name for archive entries")]
@@ -533,6 +543,7 @@ fn create_archive(args: CreateCommand) -> anyhow::Result<()> {
         write_option,
         keep_options,
         solid: args.solid,
+        sparse: args.sparse,
         pathname_editor,
     };
     if let Some(size) = max_file_size {
@@ -570,6 +581,7 @@ pub(crate) struct CreationContext {
     pub(crate) write_option: WriteOptions,
     pub(crate) keep_options: KeepOptions,
     pub(crate) solid: bool,
+    pub(crate) sparse: bool,
     pub(crate) pathname_editor: PathnameEditor,
 }
 
@@ -580,6 +592,7 @@ pub(crate) fn create_archive_file<W, F>(
         write_option,
         keep_options,
         solid,
+        sparse,
         pathname_editor,
     }: CreationContext,
     target_items: Vec<CollectedItem>,
@@ -602,6 +615,7 @@ where
         option,
         keep_options,
         pathname_editor,
+        sparse,
     };
     let rx = spawn_entry_results(
         target_items,
@@ -643,6 +657,7 @@ fn create_archive_with_split(
         write_option,
         keep_options,
         solid,
+        sparse,
         pathname_editor,
     }: CreationContext,
     target_items: Vec<CollectedItem>,
@@ -662,6 +677,7 @@ fn create_archive_with_split(
         option,
         keep_options,
         pathname_editor,
+        sparse,
     };
     let rx = spawn_entry_results(
         target_items,

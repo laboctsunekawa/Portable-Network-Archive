@@ -9,6 +9,7 @@ mod name;
 mod options;
 mod read;
 mod reference;
+mod sparse;
 mod write;
 
 #[allow(deprecated)]
@@ -24,6 +25,7 @@ pub use self::{
     name::*,
     options::*,
     reference::*,
+    sparse::*,
 };
 pub(crate) use self::{private::*, read::*, write::*};
 use crate::{
@@ -267,13 +269,51 @@ impl<'a> From<RawEntry<&'a [u8]>> for RawEntry<Cow<'a, [u8]>> {
     }
 }
 
-/// Reader for Entry data.
-pub struct EntryDataReader<'r>(EntryReader<EncodedDataReader<'r>>);
+/// Reader for decoded entry data.
+pub struct EntryDataReader<'r> {
+    inner: EntryReader<EncodedDataReader<'r>>,
+    remaining: Option<u64>,
+}
 
-impl<'r> Read for EntryDataReader<'r> {
+impl<'r> EntryDataReader<'r> {
+    #[inline]
+    fn new(inner: EntryReader<EncodedDataReader<'r>>, expected_len: Option<u64>) -> Self {
+        Self {
+            inner,
+            remaining: expected_len,
+        }
+    }
+}
+
+impl Read for EntryDataReader<'_> {
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.0.read(buf)
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let Some(remaining) = self.remaining else {
+            return self.inner.read(buf);
+        };
+        if remaining == 0 {
+            let mut probe = [0u8; 1];
+            return match self.inner.read(&mut probe)? {
+                0 => Ok(0),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "decoded FDAT is longer than SPAR data regions",
+                )),
+            };
+        }
+        let limit = remaining.min(buf.len() as u64) as usize;
+        let read = self.inner.read(&mut buf[..limit])?;
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "decoded FDAT is shorter than SPAR data regions",
+            ));
+        }
+        self.remaining = Some(remaining - read as u64);
+        Ok(read)
     }
 }
 
@@ -760,6 +800,7 @@ pub struct NormalEntry<T = Vec<u8>> {
     pub(crate) extra: Vec<RawChunk<T>>,
     pub(crate) data: Vec<T>,
     pub(crate) metadata: Metadata,
+    pub(crate) sparse_map: Option<SparseMap>,
 }
 
 impl<T> TryFrom<RawEntry<T>> for NormalEntry<T>
@@ -820,6 +861,7 @@ where
         let mut owner_user_sid = None;
         let mut owner_group_sid = None;
         let mut permission_mode = None;
+        let mut sparse_map = None;
         for chunk in chunks {
             match chunk.ty {
                 ChunkType::FEND => break,
@@ -832,6 +874,21 @@ where
                 ChunkType::FDAT => {
                     compressed_size += chunk.data().len();
                     data.push(chunk.data);
+                }
+                ChunkType::SPAR => {
+                    if header.data_kind != DataKind::FILE {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "SPAR is only valid for file entries",
+                        ));
+                    }
+                    if sparse_map.is_some() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "duplicate SPAR chunk",
+                        ));
+                    }
+                    sparse_map = Some(SparseMap::from_bytes(chunk.data())?);
                 }
                 ChunkType::fSIZ => size = Some(u128_from_be_bytes_last(chunk.data())),
                 ChunkType::cTIM => ctime = Some(seconds(chunk.data())?),
@@ -897,6 +954,7 @@ where
                 xattrs,
             },
             data,
+            sparse_map,
         })
     }
 }
@@ -912,6 +970,9 @@ where
         sink.write_chunk((ChunkType::FHED, self.header.to_bytes()))?;
         for extra_chunk in self.extra {
             sink.write_chunk(extra_chunk)?;
+        }
+        if let Some(sparse_map) = self.sparse_map {
+            sink.write_chunk((ChunkType::SPAR, sparse_map.to_bytes()))?;
         }
         if let Some(raw_file_size) = self.metadata.raw_file_size {
             let bytes = raw_file_size.to_be_bytes();
@@ -987,6 +1048,12 @@ impl<T> NormalEntry<T> {
     #[inline]
     pub fn xattrs(&self) -> &[ExtendedAttribute] {
         self.metadata.xattrs()
+    }
+
+    /// Returns the sparse extent map, when the entry stores compact sparse data.
+    #[inline]
+    pub fn sparse_map(&self) -> Option<&SparseMap> {
+        self.sparse_map.as_ref()
     }
 
     /// Returns the extra chunks of this entry.
@@ -1137,7 +1204,13 @@ impl<T: AsRef<[u8]>> NormalEntry<T> {
         encoded_data_reader(&self.data)
     }
 
-    /// Returns the reader of this [`NormalEntry`].
+    /// Returns the decoded payload reader of this [`NormalEntry`].
+    ///
+    /// For an entry with a [`SparseMap`], the reader returns only the compact
+    /// data-region bytes stored in `FDAT`; it does not synthesize zero bytes for
+    /// holes. Filesystem reconstruction must place these bytes at the offsets
+    /// recorded by [`NormalEntry::sparse_map`]. The decoded payload length is
+    /// checked against the map when the reader is consumed through EOF.
     ///
     /// # Errors
     ///
@@ -1174,7 +1247,14 @@ impl<T: AsRef<[u8]>> NormalEntry<T> {
             &self.header.to_bytes(),
         )?;
         let reader = decompress_reader(decrypt_reader, self.header.compression)?;
-        Ok(EntryDataReader(EntryReader(reader)))
+        let expected_len = self.sparse_map.as_ref().and_then(SparseMap::data_size);
+        if self.sparse_map.is_some() && expected_len.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "SPAR data size overflows",
+            ));
+        }
+        Ok(EntryDataReader::new(EntryReader(reader), expected_len))
     }
 }
 
@@ -1187,6 +1267,7 @@ impl<'a> From<NormalEntry<Cow<'a, [u8]>>> for NormalEntry<Vec<u8>> {
             extra: value.extra.into_iter().map(Into::into).collect(),
             data: value.data.into_iter().map(Into::into).collect(),
             metadata: value.metadata,
+            sparse_map: value.sparse_map,
         }
     }
 }
@@ -1200,6 +1281,7 @@ impl<'a> From<NormalEntry<&'a [u8]>> for NormalEntry<Vec<u8>> {
             extra: value.extra.into_iter().map(Into::into).collect(),
             data: value.data.into_iter().map(Into::into).collect(),
             metadata: value.metadata,
+            sparse_map: value.sparse_map,
         }
     }
 }
@@ -1213,6 +1295,7 @@ impl From<NormalEntry<Vec<u8>>> for NormalEntry<Cow<'_, [u8]>> {
             extra: value.extra.into_iter().map(Into::into).collect(),
             data: value.data.into_iter().map(Into::into).collect(),
             metadata: value.metadata,
+            sparse_map: value.sparse_map,
         }
     }
 }
@@ -1226,6 +1309,7 @@ impl<'a> From<NormalEntry<&'a [u8]>> for NormalEntry<Cow<'a, [u8]>> {
             extra: value.extra.into_iter().map(Into::into).collect(),
             data: value.data.into_iter().map(Into::into).collect(),
             metadata: value.metadata,
+            sparse_map: value.sparse_map,
         }
     }
 }
@@ -1366,6 +1450,17 @@ mod tests {
         check_impl::<RawEntry<Cow<[u8]>>>();
         check_impl::<RawEntry<&[u8]>>();
         check_impl::<RawEntry<[u8; 1]>>();
+    }
+
+    #[test]
+    fn sparse_map_survives_normal_entry_serialization() {
+        let map = SparseMap::try_new(10, vec![DataRegion::new(2, 4)]).unwrap();
+        let mut builder = FileEntryBuilder::new("sparse".into()).unwrap();
+        builder.write_all(b"data").unwrap();
+        builder.sparse_map(Some(map.clone()));
+        let entry = builder.build().unwrap();
+        let parsed = NormalEntry::try_from(RawEntry(entry.into_chunks())).unwrap();
+        assert_eq!(parsed.sparse_map(), Some(&map));
     }
 
     #[test]

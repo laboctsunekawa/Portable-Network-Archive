@@ -28,7 +28,9 @@ use std::fmt;
 /// ```
 #[non_exhaustive]
 pub enum EntryContent<'a> {
-    /// Regular file. Streaming reader over the decoded file contents.
+    /// Regular file decoded payload. For sparse entries this is the compact
+    /// sequence of data regions; holes are not synthesized. Consult the entry's
+    /// [`SparseMap`](crate::SparseMap) when reconstructing a filesystem file.
     File(EntryDataReader<'a>),
     /// Directory. Directories carry no content.
     Directory,
