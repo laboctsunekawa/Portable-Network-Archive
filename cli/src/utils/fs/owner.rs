@@ -28,12 +28,18 @@ mod imp {
     }
 }
 
-pub(crate) struct User(pub(super) imp::User);
+enum UserInner {
+    Resolved(imp::User),
+    #[cfg(unix)]
+    Numeric(u64),
+}
+
+pub(crate) struct User(UserInner);
 
 impl User {
     #[inline]
     pub(crate) fn from_name(name: &str) -> io::Result<Self> {
-        imp::User::from_name(name).map(Self)
+        imp::User::from_name(name).map(|user| Self(UserInner::Resolved(user)))
     }
 
     #[inline]
@@ -41,7 +47,11 @@ impl User {
     pub(crate) fn from_uid(uid: u64) -> io::Result<Self> {
         #[cfg(unix)]
         {
-            imp::User::from_uid((uid as u32).into()).map(Self)
+            match imp::User::from_uid((uid as u32).into()) {
+                Ok(user) => Ok(Self(UserInner::Resolved(user))),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Self(UserInner::Numeric(uid))),
+                Err(e) => Err(e),
+            }
         }
         #[cfg(not(unix))]
         {
@@ -54,13 +64,20 @@ impl User {
 
     #[inline]
     pub(crate) fn name(&self) -> Option<&str> {
-        #[cfg(any(unix, windows))]
-        {
-            Some(self.0.name())
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            None
+        match &self.0 {
+            UserInner::Resolved(user) => {
+                #[cfg(any(unix, windows))]
+                {
+                    Some(user.name())
+                }
+                #[cfg(not(any(unix, windows)))]
+                {
+                    let _ = user;
+                    None
+                }
+            }
+            #[cfg(unix)]
+            UserInner::Numeric(_) => None,
         }
     }
 
@@ -68,7 +85,10 @@ impl User {
     pub(crate) fn uid(&self) -> Option<u64> {
         #[cfg(unix)]
         {
-            Some(self.0.as_raw() as _)
+            match &self.0 {
+                UserInner::Resolved(user) => Some(user.as_raw() as _),
+                UserInner::Numeric(uid) => Some(*uid),
+            }
         }
         #[cfg(not(unix))]
         {
@@ -80,21 +100,47 @@ impl User {
     pub(crate) fn primary_gid(&self) -> Option<u64> {
         #[cfg(unix)]
         {
-            self.0.primary_gid().map(|gid| gid as _)
+            match &self.0 {
+                UserInner::Resolved(user) => user.primary_gid().map(|gid| gid as _),
+                UserInner::Numeric(_) => None,
+            }
         }
         #[cfg(not(unix))]
         {
             None
         }
     }
+
+    #[cfg(unix)]
+    #[inline]
+    pub(super) fn into_raw(self) -> u32 {
+        match self.0 {
+            UserInner::Resolved(user) => user.as_raw(),
+            UserInner::Numeric(uid) => uid as u32,
+        }
+    }
+
+    #[cfg(windows)]
+    #[inline]
+    pub(super) fn into_raw(self) -> imp::User {
+        match self.0 {
+            UserInner::Resolved(user) => user,
+        }
+    }
 }
 
-pub(crate) struct Group(pub(super) imp::Group);
+enum GroupInner {
+    Resolved(imp::Group),
+    #[cfg(unix)]
+    Numeric(u64),
+}
+
+pub(crate) struct Group(GroupInner);
 
 impl Group {
     #[inline]
     pub(crate) fn from_name(name: &str) -> io::Result<Self> {
-        imp::Group::from_name(name).map(Self)
+        imp::Group::from_name(name).map(|group| Self(GroupInner::Resolved(group)))
     }
 
     #[inline]
@@ -102,7 +148,11 @@ impl Group {
     pub(crate) fn from_gid(gid: u64) -> io::Result<Self> {
         #[cfg(unix)]
         {
-            imp::Group::from_gid((gid as u32).into()).map(Self)
+            match imp::Group::from_gid((gid as u32).into()) {
+                Ok(group) => Ok(Self(GroupInner::Resolved(group))),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Self(GroupInner::Numeric(gid))),
+                Err(e) => Err(e),
+            }
         }
         #[cfg(not(unix))]
         {
@@ -115,13 +165,20 @@ impl Group {
 
     #[inline]
     pub(crate) fn name(&self) -> Option<&str> {
-        #[cfg(any(unix, windows))]
-        {
-            Some(self.0.name())
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            None
+        match &self.0 {
+            GroupInner::Resolved(group) => {
+                #[cfg(any(unix, windows))]
+                {
+                    Some(group.name())
+                }
+                #[cfg(not(any(unix, windows)))]
+                {
+                    let _ = group;
+                    None
+                }
+            }
+            #[cfg(unix)]
+            GroupInner::Numeric(_) => None,
         }
     }
 
@@ -129,11 +186,31 @@ impl Group {
     pub(crate) fn gid(&self) -> Option<u64> {
         #[cfg(unix)]
         {
-            Some(self.0.as_raw() as _)
+            match &self.0 {
+                GroupInner::Resolved(group) => Some(group.as_raw() as _),
+                GroupInner::Numeric(gid) => Some(*gid),
+            }
         }
         #[cfg(not(unix))]
         {
             None
+        }
+    }
+
+    #[cfg(unix)]
+    #[inline]
+    pub(super) fn into_raw(self) -> u32 {
+        match self.0 {
+            GroupInner::Resolved(group) => group.as_raw(),
+            GroupInner::Numeric(gid) => gid as u32,
+        }
+    }
+
+    #[cfg(windows)]
+    #[inline]
+    pub(super) fn into_raw(self) -> imp::Group {
+        match self.0 {
+            GroupInner::Resolved(group) => group,
         }
     }
 }
