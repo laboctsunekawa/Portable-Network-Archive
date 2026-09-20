@@ -1,0 +1,93 @@
+name: package-split-3-1-eval
+
+on:
+  push:
+    branches:
+      - ci/parallel-measure-base
+    paths:
+      - .github/workflows/package-split-3-1-eval.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  RUST_BACKTRACE: 1
+
+jobs:
+  ubuntu:
+    name: Ubuntu package split / 3+1 CPUs
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PNA_TEST_REQUIRE: birthtime,mtime_nanos,xattr,nodump,chmod,setuid,unprivileged
+    steps:
+      - run: |
+          sudo apt update
+          sudo apt install -y libacl1-dev
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          channel: stable
+      - uses: baptiste0928/cargo-install@8195d4f734a149db85385bb4102b42efcd373759
+        with:
+          crate: cargo-hack
+          cache-key: ubuntu-latest
+      - run: cargo fetch --locked
+      - run: mkdir -p target/cli target/libs tmp/cli tmp/libs
+      - parallel:
+          - name: CLI feature powerset
+            run: cargo hack test --locked --release --feature-powerset --exclude-features wasm -p portable-network-archive -- --test-threads=1
+            env:
+              CARGO_TARGET_DIR: target/cli
+              CARGO_BUILD_JOBS: 3
+              TMPDIR: ${{ github.workspace }}/tmp/cli
+          - name: library feature powersets
+            run: cargo hack test --locked --release --feature-powerset --exclude-features wasm -p pna -p libpna -- --test-threads=1
+            env:
+              CARGO_TARGET_DIR: target/libs
+              CARGO_BUILD_JOBS: 1
+              TMPDIR: ${{ github.workspace }}/tmp/libs
+
+  windows:
+    name: Windows package split / 3+1 CPUs
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      PNA_TEST_REQUIRE: birthtime,mtime_nanos
+    steps:
+      - shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          channel: stable
+      - uses: baptiste0928/cargo-install@8195d4f734a149db85385bb4102b42efcd373759
+        with:
+          crate: cargo-hack
+          cache-key: windows-latest
+      - run: cargo fetch --locked
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force target/cli,target/libs,tmp/cli,tmp/libs | Out-Null
+      - parallel:
+          - name: CLI feature powerset
+            run: cargo hack test --locked --release --feature-powerset --exclude-features wasm -p portable-network-archive -- --test-threads=1
+            env:
+              CARGO_TARGET_DIR: target/cli
+              CARGO_BUILD_JOBS: 3
+              TMP: ${{ github.workspace }}\tmp\cli
+              TEMP: ${{ github.workspace }}\tmp\cli
+          - name: library feature powersets
+            run: cargo hack test --locked --release --feature-powerset --exclude-features wasm -p pna -p libpna -- --test-threads=1
+            env:
+              CARGO_TARGET_DIR: target/libs
+              CARGO_BUILD_JOBS: 1
+              TMP: ${{ github.workspace }}\tmp\libs
+              TEMP: ${{ github.workspace }}\tmp\libs
