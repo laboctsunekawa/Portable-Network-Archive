@@ -1,4 +1,5 @@
 name: bsdtar compatibility
+# Measurement-only branch: keep upstream PR isolated.
 
 on:
   workflow_dispatch:
