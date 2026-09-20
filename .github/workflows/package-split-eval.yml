@@ -1,0 +1,116 @@
+name: package-split-eval
+
+on:
+  push:
+    branches:
+      - ci/parallel-measure-base
+    paths:
+      - .github/workflows/package-split-eval.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+  RUST_BACKTRACE: 1
+
+jobs:
+  ubuntu-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PNA_TEST_REQUIRE: birthtime,mtime_nanos,xattr,nodump,chmod,setuid,unprivileged
+    steps:
+      - run: |
+          sudo apt update
+          sudo apt install -y libacl1-dev
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          channel: stable
+      - uses: baptiste0928/cargo-install@8195d4f734a149db85385bb4102b42efcd373759
+        with:
+          crate: cargo-hack
+          cache-key: ubuntu-latest
+      - run: cargo fetch --locked
+      - name: baseline
+        run: cargo hack test --locked --release --feature-powerset --exclude-features wasm --exclude portable-network-archive-fuzz --exclude xtask -- --test-threads=1
+
+  ubuntu-package-split:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PNA_TEST_REQUIRE: birthtime,mtime_nanos,xattr,nodump,chmod,setuid,unprivileged
+    steps:
+      - run: |
+          sudo apt update
+          sudo apt install -y libacl1-dev
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          channel: stable
+      - uses: baptiste0928/cargo-install@8195d4f734a149db85385bb4102b42efcd373759
+        with:
+          crate: cargo-hack
+          cache-key: ubuntu-latest
+      - run: cargo fetch --locked
+      - parallel:
+          - name: CLI feature powerset
+            run: cargo hack test --locked --release --feature-powerset --exclude-features wasm -p portable-network-archive -- --test-threads=1
+          - name: library feature powersets
+            run: cargo hack test --locked --release --feature-powerset --exclude-features wasm -p pna -p libpna -- --test-threads=1
+
+  windows-baseline:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      PNA_TEST_REQUIRE: birthtime,mtime_nanos
+    steps:
+      - shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          channel: stable
+      - uses: baptiste0928/cargo-install@8195d4f734a149db85385bb4102b42efcd373759
+        with:
+          crate: cargo-hack
+          cache-key: windows-latest
+      - run: cargo fetch --locked
+      - name: baseline
+        run: cargo hack test --locked --release --feature-powerset --exclude-features wasm --exclude portable-network-archive-fuzz --exclude xtask -- --test-threads=1
+
+  windows-package-split:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      PNA_TEST_REQUIRE: birthtime,mtime_nanos
+    steps:
+      - shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          channel: stable
+      - uses: baptiste0928/cargo-install@8195d4f734a149db85385bb4102b42efcd373759
+        with:
+          crate: cargo-hack
+          cache-key: windows-latest
+      - run: cargo fetch --locked
+      - parallel:
+          - name: CLI feature powerset
+            run: cargo hack test --locked --release --feature-powerset --exclude-features wasm -p portable-network-archive -- --test-threads=1
+          - name: library feature powersets
+            run: cargo hack test --locked --release --feature-powerset --exclude-features wasm -p pna -p libpna -- --test-threads=1
