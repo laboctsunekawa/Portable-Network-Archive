@@ -1,4 +1,5 @@
 name: bsdtar compatibility
+# Measurement-only baseline branch.
 
 on:
   workflow_dispatch:
