@@ -22,6 +22,7 @@ on:
   pull_request:
     branches:
       - main
+      - measure-fuzz-base
     paths:
       - "lib/**"
       - "pna/**"
