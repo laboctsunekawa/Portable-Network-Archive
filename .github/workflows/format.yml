@@ -1,63 +1,67 @@
-name: format
+name: measure cargo-hack package parallelism
+permissions:
+  contents: read
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "lib/**"
-      - "pna/**"
-      - "cli/**"
-      - "fuzz/**"
-      - "xtask/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".cargo/config.toml"
-      - "rust-toolchain.toml"
-      - ".github/workflows/format.yml"
   push:
     paths:
-      - "lib/**"
-      - "pna/**"
-      - "cli/**"
-      - "fuzz/**"
-      - "xtask/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".cargo/config.toml"
-      - "rust-toolchain.toml"
       - ".github/workflows/format.yml"
-permissions:
-  contents: read # checkout
 jobs:
-  rust_check_format:
-    name: Check format
-    runs-on: ubuntu-slim
-    timeout-minutes: 60
+  baseline:
+    name: sequential workspace powerset
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RUST_BACKTRACE: 1
+      PNA_TEST_REQUIRE: birthtime,mtime_nanos,xattr,nodump,chmod,setuid,unprivileged
+      CARGO_TARGET_DIR: target-measure
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y libacl1-dev
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
         with:
-          components: "rustfmt,rust-docs"
+          toolchain: stable
           cache: false
-      - name: run check format
-        run: cargo fmt --check
-        env:
-          RUST_BACKTRACE: 1
-  rust_check_doc:
-    name: Check documentation
-    runs-on: ubuntu-slim
-    timeout-minutes: 60
+      - name: Install cargo-hack
+        uses: baptiste0928/cargo-install@8195d4f734a149db85385bb4102b42efcd373759
+        with:
+          crate: cargo-hack
+      - name: Run workspace feature powerset
+        run: cargo hack test --locked --release --feature-powerset --exclude-features wasm --exclude portable-network-archive-fuzz --exclude xtask -- --test-threads=1
+
+  package_parallel:
+    name: parallel package powersets
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RUST_BACKTRACE: 1
+      PNA_TEST_REQUIRE: birthtime,mtime_nanos,xattr,nodump,chmod,setuid,unprivileged
+      CARGO_TARGET_DIR: target-measure
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y libacl1-dev
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
         with:
-          components: "rustfmt,rust-docs"
+          toolchain: stable
           cache: false
-      - name: run check doc
-        run: cargo doc --no-deps -p libpna -p pna
-        env:
-          RUST_BACKTRACE: 1
-          RUSTFLAGS: -Dwarnings
+      - name: Install cargo-hack
+        uses: baptiste0928/cargo-install@8195d4f734a149db85385bb4102b42efcd373759
+        with:
+          crate: cargo-hack
+      - parallel:
+          - name: CLI feature powerset
+            run: cargo hack test --locked --release --feature-powerset --exclude-features wasm -p portable-network-archive -- --test-threads=1
+          - name: pna feature powerset
+            run: cargo hack test --locked --release --feature-powerset --exclude-features wasm -p pna -- --test-threads=1
+          - name: libpna feature powerset
+            run: cargo hack test --locked --release --feature-powerset --exclude-features wasm -p libpna -- --test-threads=1
