@@ -1,4 +1,5 @@
 name: Fuzzing with cargo fuzz
+# measurement: two-way
 
 permissions:
   contents: read
