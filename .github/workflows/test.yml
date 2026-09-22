@@ -101,6 +101,92 @@ jobs:
             !target/tmp
           key: "${{ steps.restore-rust-build-cache.outputs.cache-primary-key }}"
 
+
+  tier1_windows_stable_sequential_control:
+    name: Tier 1 experiment control (windows-latest, stable)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: git autocrlf false
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          channel: stable
+      - name: Install cargo-hack from crates.io
+        uses: baptiste0928/cargo-install@f204293d9709061b7bc1756fec3ec4e2cd57dec0 # v3.4.0
+        with:
+          crate: cargo-hack
+          cache-key: windows-latest
+      - name: Prefetch dependencies
+        run: cargo fetch --locked
+      - name: Run feature powerset sequentially
+        run: |
+          cargo hack test --locked --release --feature-powerset --exclude-features wasm --exclude portable-network-archive-fuzz --exclude xtask -- --test-threads=1
+        env:
+          RUST_BACKTRACE: 1
+          PNA_TEST_REQUIRE: birthtime,mtime_nanos
+
+  tier1_windows_stable_parallel_experiment:
+    name: Tier 1 experiment parallel (windows-latest, stable)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: git autocrlf false
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          channel: stable
+      - name: Install cargo-hack from crates.io
+        uses: baptiste0928/cargo-install@f204293d9709061b7bc1756fec3ec4e2cd57dec0 # v3.4.0
+        with:
+          crate: cargo-hack
+          cache-key: windows-latest
+      - name: Prefetch dependencies
+        run: cargo fetch --locked
+      - parallel:
+          - name: CLI feature powerset 1/3
+            run: |
+              cargo hack test --locked --release --feature-powerset --exclude-features wasm -p portable-network-archive --partition 1/3 -- --test-threads=1
+            env:
+              CARGO_TARGET_DIR: target/parallel-cli-1
+              CARGO_BUILD_JOBS: "1"
+              RUST_BACKTRACE: 1
+              PNA_TEST_REQUIRE: birthtime,mtime_nanos
+          - name: CLI feature powerset 2/3
+            run: |
+              cargo hack test --locked --release --feature-powerset --exclude-features wasm -p portable-network-archive --partition 2/3 -- --test-threads=1
+            env:
+              CARGO_TARGET_DIR: target/parallel-cli-2
+              CARGO_BUILD_JOBS: "1"
+              RUST_BACKTRACE: 1
+              PNA_TEST_REQUIRE: birthtime,mtime_nanos
+          - name: CLI feature powerset 3/3
+            run: |
+              cargo hack test --locked --release --feature-powerset --exclude-features wasm -p portable-network-archive --partition 3/3 -- --test-threads=1
+            env:
+              CARGO_TARGET_DIR: target/parallel-cli-3
+              CARGO_BUILD_JOBS: "1"
+              RUST_BACKTRACE: 1
+              PNA_TEST_REQUIRE: birthtime,mtime_nanos
+          - name: Library feature powersets
+            run: |
+              cargo hack test --locked --release --feature-powerset --exclude-features wasm -p pna -p libpna -- --test-threads=1
+            env:
+              CARGO_TARGET_DIR: target/parallel-libs
+              CARGO_BUILD_JOBS: "1"
+              RUST_BACKTRACE: 1
+              PNA_TEST_REQUIRE: birthtime,mtime_nanos
+
   tier3_cross:
     name: Tier 3 Cross-compile
     strategy:
